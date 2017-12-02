@@ -16,8 +16,8 @@
  * limitations under the License.
  */
 
-#ifndef FREERDP_SHADOW_SERVER_LOBBY_H
-#define FREERDP_SHADOW_SERVER_LOBBY_H
+#ifndef FREERDP_SERVER_SHADOW_LOBBY_H
+#define FREERDP_SERVER_SHADOW_LOBBY_H
 
 #include <freerdp/server/shadow.h>
 
@@ -30,10 +30,10 @@
 extern "C" {
 #endif
 
-int shadow_client_init_lobby(rdpShadowClient* client);
+BOOL shadow_client_init_lobby(rdpShadowServer* server);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* FREERDP_SHADOW_SERVER_LOBBY_H */
+#endif /* FREERDP_SERVER_SHADOW_LOBBY_H */

@@ -16,8 +16,8 @@
  * limitations under the License.
  */
 
-#ifndef FREERDP_SHADOW_SERVER_ENCOMSP_H
-#define FREERDP_SHADOW_SERVER_ENCOMSP_H
+#ifndef FREERDP_SERVER_SHADOW_ENCOMSP_H
+#define FREERDP_SERVER_SHADOW_ENCOMSP_H
 
 #include <freerdp/server/shadow.h>
 
@@ -29,9 +29,10 @@ extern "C" {
 #endif
 
 int shadow_client_encomsp_init(rdpShadowClient* client);
+void shadow_client_encomsp_uninit(rdpShadowClient* client);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* FREERDP_SHADOW_SERVER_ENCOMSP_H */
+#endif /* FREERDP_SERVER_SHADOW_ENCOMSP_H */

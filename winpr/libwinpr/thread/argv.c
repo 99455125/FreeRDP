@@ -91,17 +91,15 @@
 LPSTR* CommandLineToArgvA(LPCSTR lpCmdLine, int* pNumArgs)
 {
 	char* p;
-	int index;
 	int length;
 	char* pBeg;
 	char* pEnd;
 	char* buffer;
 	char* pOutput;
-	int numArgs;
+	int numArgs = 0;
 	LPSTR* pArgs;
 	int maxNumArgs;
 	int maxBufferSize;
-	int currentIndex;
 	int cmdLineLength;
 	BOOL* lpEscapedChars;
 	LPSTR lpEscapedCmdLine;
@@ -113,17 +111,25 @@ LPSTR* CommandLineToArgvA(LPCSTR lpCmdLine, int* pNumArgs)
 		return NULL;
 
 	pArgs = NULL;
-	numArgs = 0;
 	lpEscapedCmdLine = NULL;
-	cmdLineLength = strlen(lpCmdLine);
-	lpEscapedChars = (BOOL*) malloc((cmdLineLength + 1) * sizeof(BOOL));
-	ZeroMemory(lpEscapedChars, (cmdLineLength + 1) * sizeof(BOOL));
+	cmdLineLength = (int) strlen(lpCmdLine);
+	lpEscapedChars = (BOOL*) calloc(cmdLineLength + 1, sizeof(BOOL));
+
+	if (!lpEscapedChars)
+		return NULL;
 
 	if (strstr(lpCmdLine, "\\\""))
 	{
 		int i, n;
 		char* pLastEnd = NULL;
-		lpEscapedCmdLine = (char*) malloc((cmdLineLength + 1) * sizeof(char));
+		lpEscapedCmdLine = (char*) calloc(cmdLineLength + 1, sizeof(char));
+
+		if (!lpEscapedCmdLine)
+		{
+			free(lpEscapedChars);
+			return NULL;
+		}
+
 		p = (char*) lpCmdLine;
 		pLastEnd = (char*) lpCmdLine;
 		pOutput = (char*) lpEscapedCmdLine;
@@ -134,10 +140,9 @@ LPSTR* CommandLineToArgvA(LPCSTR lpCmdLine, int* pNumArgs)
 
 			if (!pBeg)
 			{
-				length = strlen(p);
+				length = (int) strlen(p);
 				CopyMemory(pOutput, p, length);
 				pOutput += length;
-				p += length;
 				break;
 			}
 
@@ -154,43 +159,36 @@ LPSTR* CommandLineToArgvA(LPCSTR lpCmdLine, int* pNumArgs)
 				pBeg--;
 			}
 
-			n = (pEnd - pBeg) - 1;
-			length = (pBeg - pLastEnd);
+			n = (int)((pEnd - pBeg) - 1);
+			length = (int)(pBeg - pLastEnd);
 			CopyMemory(pOutput, p, length);
 			pOutput += length;
 			p += length;
 
 			for (i = 0; i < (n / 2); i++)
-			{
-				*pOutput = '\\';
-				pOutput++;
-			}
+				*pOutput++ = '\\';
 
 			p += n + 1;
 
 			if ((n % 2) != 0)
 				lpEscapedChars[pOutput - lpEscapedCmdLine] = TRUE;
 
-			*pOutput = '"';
-			pOutput++;
+			*pOutput++ = '"';
 			pLastEnd = p;
 		}
 
-		*pOutput = '\0';
-		pOutput++;
+		*pOutput++ = '\0';
 		lpCmdLine = (LPCSTR) lpEscapedCmdLine;
-		cmdLineLength = strlen(lpCmdLine);
+		cmdLineLength = (int) strlen(lpCmdLine);
 	}
 
 	maxNumArgs = 2;
-	currentIndex = 0;
 	p = (char*) lpCmdLine;
 
-	while (currentIndex < cmdLineLength - 1)
+	while (p < lpCmdLine + cmdLineLength)
 	{
-		index = strcspn(p, " \t");
-		currentIndex += (index + 1);
-		p = (char*) &lpCmdLine[currentIndex];
+		p += strcspn(p, " \t");
+		p += strspn(p, " \t");
 		maxNumArgs++;
 	}
 
@@ -198,37 +196,33 @@ LPSTR* CommandLineToArgvA(LPCSTR lpCmdLine, int* pNumArgs)
 	buffer = (char*) HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, maxBufferSize);
 
 	if (!buffer)
+	{
+		free(lpEscapedChars);
 		return NULL;
+	}
 
 	pArgs = (LPSTR*) buffer;
 	pOutput = (char*) &buffer[maxNumArgs * (sizeof(char*))];
-	numArgs = 0;
-	currentIndex = 0;
 	p = (char*) lpCmdLine;
 
-	while (currentIndex < cmdLineLength)
+	while (p < lpCmdLine + cmdLineLength)
 	{
-		pBeg = pEnd = p;
+		pBeg = p;
 
 		while (1)
 		{
-			index = strcspn(p, " \t\"\0");
+			p += strcspn(p, " \t\"\0");
 
-			if ((p[index] == '"') && (lpEscapedChars[&p[index] - lpCmdLine]))
-			{
-				p = &p[index + 1];
-				continue;
-			}
+			if ((*p != '"') || !lpEscapedChars[p - lpCmdLine])
+				break;
 
-			break;
+			p++;
 		}
 
-		if (p[index] != '"')
+		if (*p != '"')
 		{
 			/* no whitespace escaped with double quotes */
-			p = &p[index + 1];
-			pEnd = p - 1;
-			length = (pEnd - pBeg);
+			length = (int)(p - pBeg);
 			CopyMemory(pOutput, pBeg, length);
 			pOutput[length] = '\0';
 			pArgs[numArgs++] = pOutput;
@@ -236,70 +230,42 @@ LPSTR* CommandLineToArgvA(LPCSTR lpCmdLine, int* pNumArgs)
 		}
 		else
 		{
-			p = &p[index + 1];
+			p++;
 
 			while (1)
 			{
-				index = strcspn(p, "\"\0");
+				p += strcspn(p, "\"\0");
 
-				if ((p[index] == '"') && (lpEscapedChars[&p[index] - lpCmdLine]))
-				{
-					p = &p[index + 1];
-					continue;
-				}
+				if ((*p != '"') || !lpEscapedChars[p - lpCmdLine])
+					break;
 
-				break;
+				p++;
 			}
 
-			if (p[index] != '"')
-			{
+			if (*p != '"')
 				WLog_ERR(TAG, "parsing error: uneven number of unescaped double quotes!");
-			}
 
-			if (p[index] == '\0')
-			{
-				p = &p[index + 1];
-				pEnd = p - 1;
-			}
-			else
-			{
-				p = &p[index + 1];
-				index = strcspn(p, " \t\0");
-				p = &p[index + 1];
-				pEnd = p - 1;
-			}
+			if (*p && *(++p))
+				p += strcspn(p, " \t\0");
 
-			length = 0;
 			pArgs[numArgs++] = pOutput;
 
-			while (pBeg < pEnd)
+			while (pBeg < p)
 			{
 				if (*pBeg != '"')
-				{
-					*pOutput = *pBeg;
-					pOutput++;
-					length++;
-				}
+					*pOutput++ = *pBeg;
 
 				pBeg++;
 			}
 
-			*pOutput = '\0';
-			pOutput++;
+			*pOutput++ = '\0';
 		}
 
-		while ((*p == ' ') || (*p == '\t'))
-			p++;
-
-		currentIndex = (p - lpCmdLine);
+		p += strspn(p, " \t");
 	}
 
-	if (lpEscapedCmdLine)
-		free(lpEscapedCmdLine);
-
-	if (lpEscapedChars)
-		free(lpEscapedChars);
-
+	free(lpEscapedCmdLine);
+	free(lpEscapedChars);
 	*pNumArgs = numArgs;
 	return pArgs;
 }

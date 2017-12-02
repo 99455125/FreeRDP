@@ -17,8 +17,8 @@
  * limitations under the License.
  */
 
-#ifndef __XF_MONITOR_H
-#define __XF_MONITOR_H
+#ifndef FREERDP_CLIENT_X11_MONITOR_H
+#define FREERDP_CLIENT_X11_MONITOR_H
 
 #include <freerdp/api.h>
 #include <freerdp/freerdp.h>
@@ -44,7 +44,7 @@ typedef struct _VIRTUAL_SCREEN VIRTUAL_SCREEN;
 #include "xfreerdp.h"
 
 FREERDP_API int xf_list_monitors(xfContext* xfc);
-FREERDP_API BOOL xf_detect_monitors(xfContext* xfc, rdpSettings* settings);
-FREERDP_API void xf_monitors_free(xfContext *xfc, rdpSettings *settings);
+FREERDP_API BOOL xf_detect_monitors(xfContext* xfc, UINT32* pWidth, UINT32* pHeight);
+FREERDP_API void xf_monitors_free(xfContext* xfc);
 
-#endif /* __XF_MONITOR_H */
+#endif /* FREERDP_CLIENT_X11_MONITOR_H */

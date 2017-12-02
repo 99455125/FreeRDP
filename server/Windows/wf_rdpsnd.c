@@ -40,6 +40,8 @@
 
 #endif
 
+#define TAG SERVER_TAG("windows")
+
 static const AUDIO_FORMAT supported_audio_formats[] =
 {
 	{ WAVE_FORMAT_PCM, 2, 44100, 176400, 4, 16, 0, NULL },
@@ -117,7 +119,7 @@ int wf_rdpsnd_lock()
 		break;
 
 	case WAIT_FAILED:
-		WLog_ERR(TAG, "wf_rdpsnd_lock failed with 0x%08X", GetLastError());
+		WLog_ERR(TAG, "wf_rdpsnd_lock failed with 0x%08lX", GetLastError());
 		return -1;
 		break;
 	}
@@ -133,7 +135,7 @@ int wf_rdpsnd_unlock()
 
 	if (ReleaseMutex(wfi->snd_mutex) == 0)
 	{
-		WLog_DBG(TAG, "wf_rdpsnd_unlock failed with 0x%08X", GetLastError());
+		WLog_DBG(TAG, "wf_rdpsnd_unlock failed with 0x%08lX", GetLastError());
 		return -1;
 	}
 
@@ -142,12 +144,16 @@ int wf_rdpsnd_unlock()
 
 BOOL wf_peer_rdpsnd_init(wfPeerContext* context)
 {
-	wfInfo* wfi;
+	wfInfo* wfi = wf_info_get_instance();
 	
-	wfi = wf_info_get_instance();
+	if (!wfi)
+		return FALSE;
 
-	wfi->snd_mutex = CreateMutex(NULL, FALSE, NULL);
+	if (!(wfi->snd_mutex = CreateMutex(NULL, FALSE, NULL)))
+		return FALSE;
+
 	context->rdpsnd = rdpsnd_server_context_new(context->vcm);
+	context->rdpsnd->rdpcontext = &context->_p;
 	context->rdpsnd->data = context;
 
 	context->rdpsnd->server_formats = supported_audio_formats;

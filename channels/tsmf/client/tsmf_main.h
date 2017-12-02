@@ -3,6 +3,8 @@
  * Video Redirection Virtual Channel
  *
  * Copyright 2010-2011 Vic Lee
+ * Copyright 2015 Thincast Technologies GmbH
+ * Copyright 2015 DI (FH) Martin Haimberger <martin.haimberger@thincast.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +19,10 @@
  * limitations under the License.
  */
 
-#ifndef __TSMF_MAIN_H
-#define __TSMF_MAIN_H
+#ifndef FREERDP_CHANNEL_TSMF_CLIENT_MAIN_H
+#define FREERDP_CHANNEL_TSMF_CLIENT_MAIN_H
+
+#include <freerdp/freerdp.h>
 
 typedef struct _TSMF_LISTENER_CALLBACK TSMF_LISTENER_CALLBACK;
 
@@ -56,10 +60,12 @@ struct _TSMF_PLUGIN
 	const char* decoder_name;
 	const char* audio_name;
 	const char* audio_device;
+
+	rdpContext* rdpcontext;
 };
 
-void tsmf_playback_ack(IWTSVirtualChannelCallback* pChannelCallback,
+BOOL tsmf_send_eos_response(IWTSVirtualChannelCallback* pChannelCallback, UINT32 message_id);
+BOOL tsmf_playback_ack(IWTSVirtualChannelCallback* pChannelCallback,
 		UINT32 message_id, UINT64 duration, UINT32 data_size);
 
-#endif
-
+#endif /* FREERDP_CHANNEL_TSMF_CLIENT_MAIN_H */

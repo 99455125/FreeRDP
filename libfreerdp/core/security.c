@@ -25,6 +25,7 @@
 #include "security.h"
 
 #include <freerdp/log.h>
+#include <winpr/crypto.h>
 
 #define TAG FREERDP_TAG("core")
 
@@ -123,69 +124,94 @@ fips_oddparity_table[256] =
 	0xf8, 0xf8, 0xfb, 0xfb, 0xfd, 0xfd, 0xfe, 0xfe
 };
 
-static void security_salted_hash(const BYTE* salt, const BYTE* input, int length,
+static BOOL security_salted_hash(const BYTE* salt, const BYTE* input, int length,
 		const BYTE* salt1, const BYTE* salt2, BYTE* output)
 {
-	CryptoMd5 md5;
-	CryptoSha1 sha1;
-	BYTE sha1_digest[CRYPTO_SHA1_DIGEST_LENGTH];
+	WINPR_DIGEST_CTX* sha1 = NULL;
+	WINPR_DIGEST_CTX* md5 = NULL;
+	BYTE sha1_digest[WINPR_SHA1_DIGEST_LENGTH];
+	BOOL result = FALSE;
 
 	/* SaltedHash(Salt, Input, Salt1, Salt2) = MD5(S + SHA1(Input + Salt + Salt1 + Salt2)) */
 
 	/* SHA1_Digest = SHA1(Input + Salt + Salt1 + Salt2) */
-	sha1 = crypto_sha1_init();
-	if (!sha1)
-	{
-		WLog_ERR(TAG,  "unable to allocate a sha1");
-		return;
-	}
-	crypto_sha1_update(sha1, input, length); /* Input */
-	crypto_sha1_update(sha1, salt, 48); /* Salt (48 bytes) */
-	crypto_sha1_update(sha1, salt1, 32); /* Salt1 (32 bytes) */
-	crypto_sha1_update(sha1, salt2, 32); /* Salt2 (32 bytes) */
-	crypto_sha1_final(sha1, sha1_digest);
+	if (!(sha1 = winpr_Digest_New()))
+		goto out;
+
+	if (!winpr_Digest_Init(sha1, WINPR_MD_SHA1))
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, input, length)) /* Input */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, salt, 48)) /* Salt (48 bytes) */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, salt1, 32)) /* Salt1 (32 bytes) */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, salt2, 32)) /* Salt2 (32 bytes) */
+		goto out;
+
+	if (!winpr_Digest_Final(sha1, sha1_digest, sizeof(sha1_digest)))
+		goto out;
 
 	/* SaltedHash(Salt, Input, Salt1, Salt2) = MD5(S + SHA1_Digest) */
-	md5 = crypto_md5_init();
-	if (!md5)
-	{
-		WLog_ERR(TAG,  "unable to allocate a md5");
-		return;
-	}
-	crypto_md5_update(md5, salt, 48); /* Salt (48 bytes) */
-	crypto_md5_update(md5, sha1_digest, sizeof(sha1_digest)); /* SHA1_Digest */
-	crypto_md5_final(md5, output);
+	if (!(md5 = winpr_Digest_New()))
+		goto out;
+
+	/* Allow FIPS override for use of MD5 here, this is used for creating hashes of the premaster_secret and master_secret */
+	/* used for RDP licensing as described in MS-RDPELE. This is for RDP licensing packets */
+	/* which will already be encrypted under FIPS, so the use of MD5 here is not for sensitive data protection. */
+	if (!winpr_Digest_Init_Allow_FIPS(md5, WINPR_MD_MD5))
+		goto out;
+
+	if (!winpr_Digest_Update(md5, salt, 48)) /* Salt (48 bytes) */
+		goto out;
+
+	if (!winpr_Digest_Update(md5, sha1_digest, sizeof(sha1_digest))) /* SHA1_Digest */
+		goto out;
+
+	if (!winpr_Digest_Final(md5, output, WINPR_MD5_DIGEST_LENGTH))
+		goto out;
+
+	result = TRUE;
+out:
+	winpr_Digest_Free(sha1);
+	winpr_Digest_Free(md5);
+	return result;
 }
 
-static void security_premaster_hash(const char* input, int length, const BYTE* premaster_secret, const BYTE* client_random, const BYTE* server_random, BYTE* output)
+static BOOL security_premaster_hash(const char* input, int length, const BYTE* premaster_secret,
+		const BYTE* client_random, const BYTE* server_random, BYTE* output)
 {
 	/* PremasterHash(Input) = SaltedHash(PremasterSecret, Input, ClientRandom, ServerRandom) */
-	security_salted_hash(premaster_secret, (BYTE*)input, length, client_random, server_random, output);
+	return security_salted_hash(premaster_secret, (BYTE*)input, length, client_random, server_random, output);
 }
 
-void security_master_secret(const BYTE* premaster_secret, const BYTE* client_random,
+BOOL security_master_secret(const BYTE* premaster_secret, const BYTE* client_random,
 		const BYTE* server_random, BYTE* output)
 {
 	/* MasterSecret = PremasterHash('A') + PremasterHash('BB') + PremasterHash('CCC') */
-	security_premaster_hash("A", 1, premaster_secret, client_random, server_random, &output[0]);
-	security_premaster_hash("BB", 2, premaster_secret, client_random, server_random, &output[16]);
-	security_premaster_hash("CCC", 3, premaster_secret, client_random, server_random, &output[32]);
+	return security_premaster_hash("A", 1, premaster_secret, client_random, server_random, &output[0]) &&
+		security_premaster_hash("BB", 2, premaster_secret, client_random, server_random, &output[16]) &&
+		security_premaster_hash("CCC", 3, premaster_secret, client_random, server_random, &output[32]);
 }
 
-static void security_master_hash(const char* input, int length, const BYTE* master_secret,
+static BOOL security_master_hash(const char* input, int length, const BYTE* master_secret,
 		const BYTE* client_random, const BYTE* server_random, BYTE* output)
 {
 	/* MasterHash(Input) = SaltedHash(MasterSecret, Input, ServerRandom, ClientRandom) */
-	security_salted_hash(master_secret, (const BYTE*)input, length, server_random, client_random, output);
+	return security_salted_hash(master_secret, (const BYTE*)input, length, server_random, client_random, output);
 }
 
-void security_session_key_blob(const BYTE* master_secret, const BYTE* client_random,
+BOOL security_session_key_blob(const BYTE* master_secret, const BYTE* client_random,
 		const BYTE* server_random, BYTE* output)
 {
 	/* MasterHash = MasterHash('A') + MasterHash('BB') + MasterHash('CCC') */
-	security_master_hash("A", 1, master_secret, client_random, server_random, &output[0]);
-	security_master_hash("BB", 2, master_secret, client_random, server_random, &output[16]);
-	security_master_hash("CCC", 3, master_secret, client_random, server_random, &output[32]);
+	return security_master_hash("A", 1, master_secret, client_random, server_random, &output[0]) &&
+		security_master_hash("BB", 2, master_secret, client_random, server_random, &output[16]) &&
+		security_master_hash("CCC", 3, master_secret, client_random, server_random, &output[32]);
 }
 
 void security_mac_salt_key(const BYTE* session_key_blob, const BYTE* client_random,
@@ -195,27 +221,68 @@ void security_mac_salt_key(const BYTE* session_key_blob, const BYTE* client_rand
 	memcpy(output, session_key_blob, 16);
 }
 
-void security_md5_16_32_32(const BYTE* in0, const BYTE* in1, const BYTE* in2, BYTE* output)
+BOOL security_md5_16_32_32(const BYTE* in0, const BYTE* in1, const BYTE* in2, BYTE* output)
 {
-	CryptoMd5 md5;
+	WINPR_DIGEST_CTX* md5 = NULL;
+	BOOL result = FALSE;
 
-	md5 = crypto_md5_init();
-	if (!md5)
-	{
-		WLog_ERR(TAG,  "unable to allocate a md5");
-		return;
-	}
-	crypto_md5_update(md5, in0, 16);
-	crypto_md5_update(md5, in1, 32);
-	crypto_md5_update(md5, in2, 32);
-	crypto_md5_final(md5, output);
+	if (!(md5 = winpr_Digest_New()))
+		return FALSE;
+
+	if (!winpr_Digest_Init(md5, WINPR_MD_MD5))
+		goto out;
+
+	if (!winpr_Digest_Update(md5, in0, 16))
+		goto out;
+
+	if (!winpr_Digest_Update(md5, in1, 32))
+		goto out;
+
+	if (!winpr_Digest_Update(md5, in2, 32))
+		goto out;
+
+	if (!winpr_Digest_Final(md5, output, WINPR_MD5_DIGEST_LENGTH))
+		goto out;
+
+	result = TRUE;
+out:
+	winpr_Digest_Free(md5);
+	return result;
 }
 
-void security_licensing_encryption_key(const BYTE* session_key_blob, const BYTE* client_random,
-		const BYTE* server_random, BYTE* output)
+BOOL security_md5_16_32_32_Allow_FIPS(const BYTE* in0, const BYTE* in1, const BYTE* in2, BYTE* output)
 {
-	/* LicensingEncryptionKey = MD5(Second128Bits(SessionKeyBlob) + ClientRandom + ServerRandom)) */
-	security_md5_16_32_32(&session_key_blob[16], client_random, server_random, output);
+	WINPR_DIGEST_CTX* md5 = NULL;
+	BOOL result = FALSE;
+
+	if (!(md5 = winpr_Digest_New()))
+		return FALSE;
+	if (!winpr_Digest_Init_Allow_FIPS(md5, WINPR_MD_MD5))
+		goto out;
+	if (!winpr_Digest_Update(md5, in0, 16))
+		goto out;
+	if (!winpr_Digest_Update(md5, in1, 32))
+		goto out;
+	if (!winpr_Digest_Update(md5, in2, 32))
+		goto out;
+	if (!winpr_Digest_Final(md5, output, WINPR_MD5_DIGEST_LENGTH))
+		goto out;
+
+	result = TRUE;
+out:
+	winpr_Digest_Free(md5);
+	return result;
+}
+
+BOOL security_licensing_encryption_key(const BYTE* session_key_blob, const BYTE* client_random,
+                                       const BYTE* server_random, BYTE* output)
+{
+	/* LicensingEncryptionKey = MD5(Second128Bits(SessionKeyBlob) + ClientRandom + ServerRandom))
+	 * Allow FIPS use of MD5 here, this is just used for creating the licensing encryption key as described in MS-RDPELE.
+	 * This is for RDP licensing packets which will already be encrypted under FIPS, so the use of MD5 here is not for
+	 * sensitive data protection. */
+	return security_md5_16_32_32_Allow_FIPS(&session_key_blob[16], client_random, server_random,
+	                                        output);
 }
 
 void security_UINT32_le(BYTE* output, UINT32 value)
@@ -226,92 +293,137 @@ void security_UINT32_le(BYTE* output, UINT32 value)
 	output[3] = (value >> 24) & 0xFF;
 }
 
-void security_mac_data(const BYTE* mac_salt_key, const BYTE* data, UINT32 length,
+BOOL security_mac_data(const BYTE* mac_salt_key, const BYTE* data, UINT32 length,
 		BYTE* output)
 {
-	CryptoMd5 md5;
-	CryptoSha1 sha1;
+	WINPR_DIGEST_CTX* sha1 = NULL;
+	WINPR_DIGEST_CTX* md5 = NULL;
 	BYTE length_le[4];
-	BYTE sha1_digest[CRYPTO_SHA1_DIGEST_LENGTH];
-
+	BYTE sha1_digest[WINPR_SHA1_DIGEST_LENGTH];
+	BOOL result = FALSE;
 	/* MacData = MD5(MacSaltKey + pad2 + SHA1(MacSaltKey + pad1 + length + data)) */
-
 	security_UINT32_le(length_le, length); /* length must be little-endian */
 
 	/* SHA1_Digest = SHA1(MacSaltKey + pad1 + length + data) */
-	sha1 = crypto_sha1_init();
-	if (!sha1)
-	{
-		WLog_ERR(TAG,  "unable to allocate a sha1");
-		return;
-	}
-	crypto_sha1_update(sha1, mac_salt_key, 16); /* MacSaltKey */
-	crypto_sha1_update(sha1, pad1, sizeof(pad1)); /* pad1 */
-	crypto_sha1_update(sha1, length_le, sizeof(length_le)); /* length */
-	crypto_sha1_update(sha1, data, length); /* data */
-	crypto_sha1_final(sha1, sha1_digest);
+	if (!(sha1 = winpr_Digest_New()))
+		goto out;
+
+	if (!winpr_Digest_Init(sha1, WINPR_MD_SHA1))
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, mac_salt_key, 16)) /* MacSaltKey */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, pad1, sizeof(pad1))) /* pad1 */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, length_le, sizeof(length_le))) /* length */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, data, length)) /* data */
+		goto out;
+
+	if (!winpr_Digest_Final(sha1, sha1_digest, sizeof(sha1_digest)))
+		goto out;
 
 	/* MacData = MD5(MacSaltKey + pad2 + SHA1_Digest) */
-	md5 = crypto_md5_init();
-	if (!md5)
-	{
-		WLog_ERR(TAG,  "unable to allocate a md5");
-		return;
-	}
-	crypto_md5_update(md5, mac_salt_key, 16); /* MacSaltKey */
-	crypto_md5_update(md5, pad2, sizeof(pad2)); /* pad2 */
-	crypto_md5_update(md5, sha1_digest, sizeof(sha1_digest)); /* SHA1_Digest */
-	crypto_md5_final(md5, output);
+	if (!(md5 = winpr_Digest_New()))
+		goto out;
+
+	/* Allow FIPS override for use of MD5 here, this is only used for creating the MACData field of the */
+	/* Client Platform Challenge Response packet (from MS-RDPELE section 2.2.2.5). This is for RDP licensing packets */
+	/* which will already be encrypted under FIPS, so the use of MD5 here is not for sensitive data protection. */
+	if (!winpr_Digest_Init_Allow_FIPS(md5, WINPR_MD_MD5))
+		goto out;
+
+	if (!winpr_Digest_Update(md5, mac_salt_key, 16)) /* MacSaltKey */
+		goto out;
+
+	if (!winpr_Digest_Update(md5, pad2, sizeof(pad2))) /* pad2 */
+		goto out;
+
+	if (!winpr_Digest_Update(md5, sha1_digest, sizeof(sha1_digest))) /* SHA1_Digest */
+		goto out;
+
+	if (!winpr_Digest_Final(md5, output, WINPR_MD5_DIGEST_LENGTH))
+		goto out;
+
+	result = TRUE;
+out:
+	winpr_Digest_Free(sha1);
+	winpr_Digest_Free(md5);
+	return result;
 }
 
-void security_mac_signature(rdpRdp *rdp, const BYTE* data, UINT32 length, BYTE* output)
+BOOL security_mac_signature(rdpRdp *rdp, const BYTE* data, UINT32 length, BYTE* output)
 {
-	CryptoMd5 md5;
-	CryptoSha1 sha1;
+	WINPR_DIGEST_CTX* sha1 = NULL;
+	WINPR_DIGEST_CTX* md5 = NULL;
 	BYTE length_le[4];
-	BYTE md5_digest[CRYPTO_MD5_DIGEST_LENGTH];
-	BYTE sha1_digest[CRYPTO_SHA1_DIGEST_LENGTH];
-
+	BYTE md5_digest[WINPR_MD5_DIGEST_LENGTH];
+	BYTE sha1_digest[WINPR_SHA1_DIGEST_LENGTH];
+	BOOL result = FALSE;
 	security_UINT32_le(length_le, length); /* length must be little-endian */
 
 	/* SHA1_Digest = SHA1(MACKeyN + pad1 + length + data) */
-	sha1 = crypto_sha1_init();
-	if (!sha1)
-	{
-		WLog_ERR(TAG,  "unable to allocate a sha1");
-		return;
-	}
-	crypto_sha1_update(sha1, rdp->sign_key, rdp->rc4_key_len); /* MacKeyN */
-	crypto_sha1_update(sha1, pad1, sizeof(pad1)); /* pad1 */
-	crypto_sha1_update(sha1, length_le, sizeof(length_le)); /* length */
-	crypto_sha1_update(sha1, data, length); /* data */
-	crypto_sha1_final(sha1, sha1_digest);
+	if (!(sha1 = winpr_Digest_New()))
+		goto out;
+
+	if (!winpr_Digest_Init(sha1, WINPR_MD_SHA1))
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, rdp->sign_key, rdp->rc4_key_len)) /* MacKeyN */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, pad1, sizeof(pad1))) /* pad1 */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, length_le, sizeof(length_le))) /* length */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, data, length)) /* data */
+		goto out;
+
+	if (!winpr_Digest_Final(sha1, sha1_digest, sizeof(sha1_digest)))
+		goto out;
 
 	/* MACSignature = First64Bits(MD5(MACKeyN + pad2 + SHA1_Digest)) */
-	md5 = crypto_md5_init();
-	if (!md5)
-	{
-		WLog_ERR(TAG,  "unable to allocate a md5");
-		return;
-	}
-	crypto_md5_update(md5, rdp->sign_key, rdp->rc4_key_len); /* MacKeyN */
-	crypto_md5_update(md5, pad2, sizeof(pad2)); /* pad2 */
-	crypto_md5_update(md5, sha1_digest, sizeof(sha1_digest)); /* SHA1_Digest */
-	crypto_md5_final(md5, md5_digest);
+	if (!(md5 = winpr_Digest_New()))
+		goto out;
+
+	if (!winpr_Digest_Init(md5, WINPR_MD_MD5))
+		goto out;
+
+	if (!winpr_Digest_Update(md5, rdp->sign_key, rdp->rc4_key_len)) /* MacKeyN */
+		goto out;
+
+	if (!winpr_Digest_Update(md5, pad2, sizeof(pad2))) /* pad2 */
+		goto out;
+
+	if (!winpr_Digest_Update(md5, sha1_digest, sizeof(sha1_digest))) /* SHA1_Digest */
+		goto out;
+
+	if (!winpr_Digest_Final(md5, md5_digest, sizeof(md5_digest)))
+		goto out;
 
 	memcpy(output, md5_digest, 8);
+	result = TRUE;
+out:
+	winpr_Digest_Free(sha1);
+	winpr_Digest_Free(md5);
+	return result;
 }
 
-void security_salted_mac_signature(rdpRdp *rdp, const BYTE* data, UINT32 length,
+BOOL security_salted_mac_signature(rdpRdp *rdp, const BYTE* data, UINT32 length,
 		BOOL encryption, BYTE* output)
 {
-	CryptoMd5 md5;
-	CryptoSha1 sha1;
+	WINPR_DIGEST_CTX* sha1 = NULL;
+	WINPR_DIGEST_CTX* md5 = NULL;
 	BYTE length_le[4];
 	BYTE use_count_le[4];
-	BYTE md5_digest[CRYPTO_MD5_DIGEST_LENGTH];
-	BYTE sha1_digest[CRYPTO_SHA1_DIGEST_LENGTH];
-
+	BYTE md5_digest[WINPR_MD5_DIGEST_LENGTH];
+	BYTE sha1_digest[WINPR_SHA1_DIGEST_LENGTH];
+	BOOL result = FALSE;
 	security_UINT32_le(length_le, length); /* length must be little-endian */
 
 	if (encryption)
@@ -328,48 +440,73 @@ void security_salted_mac_signature(rdpRdp *rdp, const BYTE* data, UINT32 length,
 	}
 
 	/* SHA1_Digest = SHA1(MACKeyN + pad1 + length + data) */
-	sha1 = crypto_sha1_init();
-	if (!sha1)
-	{
-		WLog_ERR(TAG,  "unable to allocate a sha1");
-		return;
-	}
-	crypto_sha1_update(sha1, rdp->sign_key, rdp->rc4_key_len); /* MacKeyN */
-	crypto_sha1_update(sha1, pad1, sizeof(pad1)); /* pad1 */
-	crypto_sha1_update(sha1, length_le, sizeof(length_le)); /* length */
-	crypto_sha1_update(sha1, data, length); /* data */
-	crypto_sha1_update(sha1, use_count_le, sizeof(use_count_le)); /* encryptionCount */
-	crypto_sha1_final(sha1, sha1_digest);
+	if (!(sha1 = winpr_Digest_New()))
+		goto out;
+
+	if (!winpr_Digest_Init(sha1, WINPR_MD_SHA1))
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, rdp->sign_key, rdp->rc4_key_len)) /* MacKeyN */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, pad1, sizeof(pad1))) /* pad1 */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, length_le, sizeof(length_le))) /* length */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, data, length)) /* data */
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, use_count_le, sizeof(use_count_le))) /* encryptionCount */
+		goto out;
+
+	if (!winpr_Digest_Final(sha1, sha1_digest, sizeof(sha1_digest)))
+		goto out;
 
 	/* MACSignature = First64Bits(MD5(MACKeyN + pad2 + SHA1_Digest)) */
-	md5 = crypto_md5_init();
-	if (!md5)
-	{
-		WLog_ERR(TAG,  "unable to allocate a md5");
-		return;
-	}
-	crypto_md5_update(md5, rdp->sign_key, rdp->rc4_key_len); /* MacKeyN */
-	crypto_md5_update(md5, pad2, sizeof(pad2)); /* pad2 */
-	crypto_md5_update(md5, sha1_digest, sizeof(sha1_digest)); /* SHA1_Digest */
-	crypto_md5_final(md5, md5_digest);
+	if (!(md5 = winpr_Digest_New()))
+		goto out;
+
+	if (!winpr_Digest_Init(md5, WINPR_MD_MD5))
+		goto out;
+
+	if (!winpr_Digest_Update(md5, rdp->sign_key, rdp->rc4_key_len)) /* MacKeyN */
+		goto out;
+
+	if (!winpr_Digest_Update(md5, pad2, sizeof(pad2))) /* pad2 */
+		goto out;
+
+	if (!winpr_Digest_Update(md5, sha1_digest, sizeof(sha1_digest))) /* SHA1_Digest */
+		goto out;
+
+	if (!winpr_Digest_Final(md5, md5_digest, sizeof(md5_digest)))
+		goto out;
 
 	memcpy(output, md5_digest, 8);
+	result = TRUE;
+out:
+	winpr_Digest_Free(sha1);
+	winpr_Digest_Free(md5);
+	return result;
 }
 
-static void security_A(BYTE* master_secret, const BYTE* client_random, BYTE* server_random,
+static BOOL security_A(BYTE* master_secret, const BYTE* client_random, BYTE* server_random,
 		BYTE* output)
 {
-	security_premaster_hash("A", 1, master_secret, client_random, server_random, &output[0]);
-	security_premaster_hash("BB", 2, master_secret, client_random, server_random, &output[16]);
-	security_premaster_hash("CCC", 3, master_secret, client_random, server_random, &output[32]);
+	return
+		security_premaster_hash("A", 1, master_secret, client_random, server_random, &output[0]) &&
+		security_premaster_hash("BB", 2, master_secret, client_random, server_random, &output[16]) &&
+		security_premaster_hash("CCC", 3, master_secret, client_random, server_random, &output[32]);
 }
 
-static void security_X(BYTE* master_secret, const BYTE* client_random, BYTE* server_random,
+static BOOL security_X(BYTE* master_secret, const BYTE* client_random, BYTE* server_random,
 		BYTE* output)
 {
-	security_premaster_hash("X", 1, master_secret, client_random, server_random, &output[0]);
-	security_premaster_hash("YY", 2, master_secret, client_random, server_random, &output[16]);
-	security_premaster_hash("ZZZ", 3, master_secret, client_random, server_random, &output[32]);
+	return
+		security_premaster_hash("X", 1, master_secret, client_random, server_random, &output[0]) &&
+		security_premaster_hash("YY", 2, master_secret, client_random, server_random, &output[16]) &&
+		security_premaster_hash("ZZZ", 3, master_secret, client_random, server_random, &output[32]);
 }
 
 static void fips_expand_key_bits(BYTE* in, BYTE* out)
@@ -386,6 +523,7 @@ static void fips_expand_key_bits(BYTE* in, BYTE* out)
 	{
 		p = b / 8;
 		r = b % 8;
+
 		if (r == 0)
 		{
 			out[i] = buf[p] & 0xfe;
@@ -413,47 +551,51 @@ BOOL security_establish_keys(const BYTE* client_random, rdpRdp* rdp)
 	BYTE* server_random;
 	BYTE salt[] = { 0xD1, 0x26, 0x9E }; /* 40 bits: 3 bytes, 56 bits: 1 byte */
 	rdpSettings* settings;
-
+	BOOL status;
 	settings = rdp->settings;
 	server_random = settings->ServerRandom;
 
 	if (settings->EncryptionMethods == ENCRYPTION_METHOD_FIPS)
 	{
-		CryptoSha1 sha1;
-		BYTE client_encrypt_key_t[CRYPTO_SHA1_DIGEST_LENGTH + 1];
-		BYTE client_decrypt_key_t[CRYPTO_SHA1_DIGEST_LENGTH + 1];
-		WLog_INFO(TAG,  "FIPS Compliant encryption level.");
-		sha1 = crypto_sha1_init();
-		if (!sha1)
+		WINPR_DIGEST_CTX* sha1;
+		BYTE client_encrypt_key_t[WINPR_SHA1_DIGEST_LENGTH + 1];
+		BYTE client_decrypt_key_t[WINPR_SHA1_DIGEST_LENGTH + 1];
+
+		if (!(sha1 = winpr_Digest_New()))
+			return FALSE;
+
+		if (!winpr_Digest_Init(sha1, WINPR_MD_SHA1) ||
+		    !winpr_Digest_Update(sha1, client_random + 16, 16) ||
+		    !winpr_Digest_Update(sha1, server_random + 16, 16) ||
+		    !winpr_Digest_Final(sha1, client_encrypt_key_t, sizeof(client_encrypt_key_t)))
 		{
-			WLog_ERR(TAG,  "unable to allocate a sha1");
+			winpr_Digest_Free(sha1);
 			return FALSE;
 		}
-		crypto_sha1_update(sha1, client_random + 16, 16);
-		crypto_sha1_update(sha1, server_random + 16, 16);
-		crypto_sha1_final(sha1, client_encrypt_key_t);
+
 		client_encrypt_key_t[20] = client_encrypt_key_t[0];
 
-		sha1 = crypto_sha1_init();
-		if (!sha1)
+		if (!winpr_Digest_Init(sha1, WINPR_MD_SHA1) ||
+		    !winpr_Digest_Update(sha1, client_random, 16) ||
+		    !winpr_Digest_Update(sha1, server_random, 16) ||
+		    !winpr_Digest_Final(sha1, client_decrypt_key_t, sizeof(client_decrypt_key_t)))
 		{
-			WLog_ERR(TAG,  "unable to allocate a sha1");
+			winpr_Digest_Free(sha1);
 			return FALSE;
 		}
-		crypto_sha1_update(sha1, client_random, 16);
-		crypto_sha1_update(sha1, server_random, 16);
-		crypto_sha1_final(sha1, client_decrypt_key_t);
+
 		client_decrypt_key_t[20] = client_decrypt_key_t[0];
 
-		sha1 = crypto_sha1_init();
-		if (!sha1)
+		if (!winpr_Digest_Init(sha1, WINPR_MD_SHA1) ||
+		    !winpr_Digest_Update(sha1, client_decrypt_key_t, WINPR_SHA1_DIGEST_LENGTH) ||
+		    !winpr_Digest_Update(sha1, client_encrypt_key_t, WINPR_SHA1_DIGEST_LENGTH) ||
+		    !winpr_Digest_Final(sha1, rdp->fips_sign_key, WINPR_SHA1_DIGEST_LENGTH))
 		{
-			WLog_ERR(TAG,  "unable to allocate a sha1");
+			winpr_Digest_Free(sha1);
 			return FALSE;
 		}
-		crypto_sha1_update(sha1, client_decrypt_key_t, 20);
-		crypto_sha1_update(sha1, client_encrypt_key_t, 20);
-		crypto_sha1_final(sha1, rdp->fips_sign_key);
+
+		winpr_Digest_Free(sha1);
 
 		if (rdp->settings->ServerMode)
 		{
@@ -470,25 +612,30 @@ BOOL security_establish_keys(const BYTE* client_random, rdpRdp* rdp)
 	memcpy(pre_master_secret, client_random, 24);
 	memcpy(pre_master_secret + 24, server_random, 24);
 
-	security_A(pre_master_secret, client_random, server_random, master_secret);
-	security_X(master_secret, client_random, server_random, session_key_blob);
+	if (!security_A(pre_master_secret, client_random, server_random, master_secret) ||
+		!security_X(master_secret, client_random, server_random, session_key_blob))
+	{
+		return FALSE;
+	}
 
 	memcpy(rdp->sign_key, session_key_blob, 16);
 
 	if (rdp->settings->ServerMode)
 	{
-		security_md5_16_32_32(&session_key_blob[16], client_random,
-		    server_random, rdp->encrypt_key);
-		security_md5_16_32_32(&session_key_blob[32], client_random,
-		    server_random, rdp->decrypt_key);
+		status = security_md5_16_32_32(&session_key_blob[16], client_random, server_random, rdp->encrypt_key);
+		status &= security_md5_16_32_32(&session_key_blob[32], client_random, server_random, rdp->decrypt_key);
 	}
 	else
 	{
-		security_md5_16_32_32(&session_key_blob[16], client_random,
-		    server_random, rdp->decrypt_key);
-		security_md5_16_32_32(&session_key_blob[32], client_random,
-		    server_random, rdp->encrypt_key);
+		/* Allow FIPS use of MD5 here, this is just used for generation of the SessionKeyBlob as described in MS-RDPELE. */
+		/* This is for RDP licensing packets which will already be encrypted under FIPS, so the use of MD5 here is not */
+		/* for sensitive data protection. */
+		status = security_md5_16_32_32_Allow_FIPS(&session_key_blob[16], client_random, server_random, rdp->decrypt_key);
+		status &= security_md5_16_32_32_Allow_FIPS(&session_key_blob[32], client_random, server_random, rdp->encrypt_key);
 	}
+
+	if (!status)
+		return FALSE;
 
 	if (settings->EncryptionMethods == ENCRYPTION_METHOD_40BIT)
 	{
@@ -515,144 +662,206 @@ BOOL security_establish_keys(const BYTE* client_random, rdpRdp* rdp)
 	rdp->decrypt_checksum_use_count = 0;
 	rdp->encrypt_use_count =0;
 	rdp->encrypt_checksum_use_count =0;
-
 	return TRUE;
 }
 
 BOOL security_key_update(BYTE* key, BYTE* update_key, int key_len, rdpRdp* rdp)
 {
-	BYTE sha1h[CRYPTO_SHA1_DIGEST_LENGTH];
-	CryptoMd5 md5;
-	CryptoSha1 sha1;
-	CryptoRc4 rc4;
+	BYTE sha1h[WINPR_SHA1_DIGEST_LENGTH];
+	WINPR_DIGEST_CTX* sha1 = NULL;
+	WINPR_DIGEST_CTX* md5 = NULL;
+	WINPR_RC4_CTX* rc4 = NULL;
 	BYTE salt[] = { 0xD1, 0x26, 0x9E }; /* 40 bits: 3 bytes, 56 bits: 1 byte */
+	BOOL result = FALSE;
+	WLog_DBG(TAG, "updating RDP key");
 
-	sha1 = crypto_sha1_init();
-	if (!sha1)
-	{
-		WLog_ERR(TAG,  "unable to allocate a sha1");
-		return FALSE;
-	}
-	crypto_sha1_update(sha1, update_key, key_len);
-	crypto_sha1_update(sha1, pad1, sizeof(pad1));
-	crypto_sha1_update(sha1, key, key_len);
-	crypto_sha1_final(sha1, sha1h);
+	if (!(sha1 = winpr_Digest_New()))
+		goto out;
 
-	md5 = crypto_md5_init();
-	if (!md5)
-	{
-		WLog_ERR(TAG,  "unable to allocate a md5");
-		return FALSE;
-	}
-	crypto_md5_update(md5, update_key, key_len);
-	crypto_md5_update(md5, pad2, sizeof(pad2));
-	crypto_md5_update(md5, sha1h, sizeof(sha1h));
-	crypto_md5_final(md5, key);
+	if (!winpr_Digest_Init(sha1, WINPR_MD_SHA1))
+		goto out;
 
-	rc4 = crypto_rc4_init(key, key_len);
-	if (!rc4)
-	{
-		WLog_ERR(TAG,  "unable to allocate a rc4");
-		return FALSE;
-	}
-	crypto_rc4(rc4, key_len, key, key);
-	crypto_rc4_free(rc4);
+	if (!winpr_Digest_Update(sha1, update_key, key_len))
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, pad1, sizeof(pad1)))
+		goto out;
+
+	if (!winpr_Digest_Update(sha1, key, key_len))
+		goto out;
+
+	if (!winpr_Digest_Final(sha1, sha1h, sizeof(sha1h)))
+		goto out;
+
+	if (!(md5 = winpr_Digest_New()))
+		goto out;
+
+	if (!winpr_Digest_Init(md5, WINPR_MD_MD5))
+		goto out;
+
+	if (!winpr_Digest_Update(md5, update_key, key_len))
+		goto out;
+
+	if (!winpr_Digest_Update(md5, pad2, sizeof(pad2)))
+		goto out;
+
+	if (!winpr_Digest_Update(md5, sha1h, sizeof(sha1h)))
+		goto out;
+
+	if (!winpr_Digest_Final(md5, key, WINPR_MD5_DIGEST_LENGTH))
+		goto out;
+
+	if (!(rc4 = winpr_RC4_New(key, key_len)))
+		goto out;
+
+	if (!winpr_RC4_Update(rc4, key_len, key, key))
+		goto out;
 
 	if (rdp->settings->EncryptionMethods == ENCRYPTION_METHOD_40BIT)
 		memcpy(key, salt, 3);
 	else if (rdp->settings->EncryptionMethods == ENCRYPTION_METHOD_56BIT)
 		memcpy(key, salt, 1);
 
-	return TRUE;
+	result = TRUE;
+out:
+	winpr_Digest_Free(sha1);
+	winpr_Digest_Free(md5);
+	winpr_RC4_Free(rc4);
+	return result;
 }
 
-BOOL security_encrypt(BYTE* data, int length, rdpRdp* rdp)
+BOOL security_encrypt(BYTE* data, size_t length, rdpRdp* rdp)
 {
 	if (rdp->encrypt_use_count >= 4096)
 	{
-		security_key_update(rdp->encrypt_key, rdp->encrypt_update_key, rdp->rc4_key_len, rdp);
-		crypto_rc4_free(rdp->rc4_encrypt_key);
-		rdp->rc4_encrypt_key = crypto_rc4_init(rdp->encrypt_key, rdp->rc4_key_len);
-		if (!rdp->rc4_encrypt_key)
-		{
-			WLog_ERR(TAG,  "unable to allocate rc4 encrypt key");
+		if (!security_key_update(rdp->encrypt_key, rdp->encrypt_update_key, rdp->rc4_key_len, rdp))
 			return FALSE;
-		}
+
+		winpr_RC4_Free(rdp->rc4_encrypt_key);
+		rdp->rc4_encrypt_key = winpr_RC4_New(rdp->encrypt_key, rdp->rc4_key_len);
+
+		if (!rdp->rc4_encrypt_key)
+			return FALSE;
+
 		rdp->encrypt_use_count = 0;
 	}
-	crypto_rc4(rdp->rc4_encrypt_key, length, data, data);
+
+	if (!winpr_RC4_Update(rdp->rc4_encrypt_key, length, data, data))
+		return FALSE;
+
 	rdp->encrypt_use_count++;
 	rdp->encrypt_checksum_use_count++;
 	return TRUE;
 }
 
-BOOL security_decrypt(BYTE* data, int length, rdpRdp* rdp)
+BOOL security_decrypt(BYTE* data, size_t length, rdpRdp* rdp)
 {
 	if (rdp->rc4_decrypt_key == NULL)
 		return FALSE;
+
 	if (rdp->decrypt_use_count >= 4096)
 	{
-		security_key_update(rdp->decrypt_key, rdp->decrypt_update_key, rdp->rc4_key_len, rdp);
-		crypto_rc4_free(rdp->rc4_decrypt_key);
-		rdp->rc4_decrypt_key = crypto_rc4_init(rdp->decrypt_key, rdp->rc4_key_len);
-		if (!rdp->rc4_decrypt_key)
-		{
-			WLog_ERR(TAG,  "unable to allocate rc4 decrypt key");
+		if (!security_key_update(rdp->decrypt_key, rdp->decrypt_update_key, rdp->rc4_key_len, rdp))
 			return FALSE;
-		}
+
+		winpr_RC4_Free(rdp->rc4_decrypt_key);
+		rdp->rc4_decrypt_key = winpr_RC4_New(rdp->decrypt_key,
+						     rdp->rc4_key_len);
+
+		if (!rdp->rc4_decrypt_key)
+			return FALSE;
 
 		rdp->decrypt_use_count = 0;
 	}
-	crypto_rc4(rdp->rc4_decrypt_key, length, data, data);
+
+	if (!winpr_RC4_Update(rdp->rc4_decrypt_key, length, data, data))
+		return FALSE;
+
 	rdp->decrypt_use_count += 1;
 	rdp->decrypt_checksum_use_count++;
 	return TRUE;
 }
 
-void security_hmac_signature(const BYTE* data, int length, BYTE* output, rdpRdp* rdp)
+BOOL security_hmac_signature(const BYTE* data, size_t length, BYTE* output, rdpRdp* rdp)
 {
-	BYTE buf[20];
+	BYTE buf[WINPR_SHA1_DIGEST_LENGTH];
 	BYTE use_count_le[4];
-
+	WINPR_HMAC_CTX* hmac;
+	BOOL result = FALSE;
 	security_UINT32_le(use_count_le, rdp->encrypt_use_count);
 
-	crypto_hmac_sha1_init(rdp->fips_hmac, rdp->fips_sign_key, 20);
-	crypto_hmac_update(rdp->fips_hmac, data, length);
-	crypto_hmac_update(rdp->fips_hmac, use_count_le, 4);
-	crypto_hmac_final(rdp->fips_hmac, buf, 20);
+	if (!(hmac = winpr_HMAC_New()))
+		return FALSE;
+
+	if (!winpr_HMAC_Init(hmac, WINPR_MD_SHA1, rdp->fips_sign_key, WINPR_SHA1_DIGEST_LENGTH))
+		goto out;
+
+	if (!winpr_HMAC_Update(hmac, data, length))
+		goto out;
+
+	if (!winpr_HMAC_Update(hmac, use_count_le, 4))
+		goto out;
+
+	if (!winpr_HMAC_Final(hmac, buf, WINPR_SHA1_DIGEST_LENGTH))
+		goto out;
 
 	memmove(output, buf, 8);
+	result = TRUE;
+out:
+	winpr_HMAC_Free(hmac);
+	return result;
 }
 
-BOOL security_fips_encrypt(BYTE* data, int length, rdpRdp* rdp)
+BOOL security_fips_encrypt(BYTE* data, size_t length, rdpRdp* rdp)
 {
-	crypto_des3_encrypt(rdp->fips_encrypt, length, data, data);
+	size_t olen;
+
+	if (!winpr_Cipher_Update(rdp->fips_encrypt, data, length, data, &olen))
+		return FALSE;
+
 	rdp->encrypt_use_count++;
 	return TRUE;
 }
 
-BOOL security_fips_decrypt(BYTE* data, int length, rdpRdp* rdp)
+BOOL security_fips_decrypt(BYTE* data, size_t length, rdpRdp* rdp)
 {
-	crypto_des3_decrypt(rdp->fips_decrypt, length, data, data);
-	return TRUE;
-}
+	size_t olen;
 
-BOOL security_fips_check_signature(const BYTE* data, int length, const BYTE* sig, rdpRdp* rdp)
-{
-	BYTE buf[20];
-	BYTE use_count_le[4];
-
-	security_UINT32_le(use_count_le, rdp->decrypt_use_count);
-
-	crypto_hmac_sha1_init(rdp->fips_hmac, rdp->fips_sign_key, 20);
-	crypto_hmac_update(rdp->fips_hmac, data, length);
-	crypto_hmac_update(rdp->fips_hmac, use_count_le, 4);
-	crypto_hmac_final(rdp->fips_hmac, buf, 20);
-
-	rdp->decrypt_use_count++;
-
-	if (memcmp(sig, buf, 8))
+	if (!winpr_Cipher_Update(rdp->fips_decrypt, data, length, data, &olen))
 		return FALSE;
 
 	return TRUE;
+}
+
+BOOL security_fips_check_signature(const BYTE* data, size_t length, const BYTE* sig, rdpRdp* rdp)
+{
+	BYTE buf[WINPR_SHA1_DIGEST_LENGTH];
+	BYTE use_count_le[4];
+	WINPR_HMAC_CTX* hmac;
+	BOOL result = FALSE;
+	security_UINT32_le(use_count_le, rdp->decrypt_use_count);
+
+	if (!(hmac = winpr_HMAC_New()))
+		return FALSE;
+
+	if (!winpr_HMAC_Init(hmac, WINPR_MD_SHA1, rdp->fips_sign_key, WINPR_SHA1_DIGEST_LENGTH))
+		goto out;
+
+	if (!winpr_HMAC_Update(hmac, data, length))
+		goto out;
+
+	if (!winpr_HMAC_Update(hmac, use_count_le, 4))
+		goto out;
+
+	if (!winpr_HMAC_Final(hmac, buf, WINPR_SHA1_DIGEST_LENGTH))
+		goto out;
+
+	rdp->decrypt_use_count++;
+
+	if (!memcmp(sig, buf, 8))
+		result = TRUE;
+
+out:
+	winpr_HMAC_Free(hmac);
+	return result;
 }

@@ -18,8 +18,8 @@
  * limitations under the License.
  */
 
-#ifndef __SEACH_MAN_H
-#define __SEACH_MAN_H
+#ifndef FREERDP_CHANNEL_URBDRC_CLIENT_SEARCHMAN_H
+#define FREERDP_CHANNEL_URBDRC_CLIENT_SEARCHMAN_H
 
 #include "urbdrc_types.h"
 
@@ -47,7 +47,7 @@ struct _USB_SEARCHMAN
 	pthread_mutex_t mutex;
 	HANDLE term_event;
 	sem_t sem_term;
-	int strated;
+	int started;
 
 	/* for urbdrc channel call back */
 	void* urbdrc;
@@ -57,11 +57,11 @@ struct _USB_SEARCHMAN
 	/* show all device in the list */
 	void (*show) (USB_SEARCHMAN* self);
 	/* start searchman */
-	void (*start) (USB_SEARCHMAN* self, void * func);
+	BOOL (*start) (USB_SEARCHMAN* self, void* (*func)(void*));
 	/* close searchman */
 	void (*close) (USB_SEARCHMAN* self);
 	/* add a new usb device for search */
-	int (*add) (USB_SEARCHMAN* seachman, UINT16 idVendor, UINT16 idProduct);
+	BOOL (*add) (USB_SEARCHMAN* seachman, UINT16 idVendor, UINT16 idProduct);
 	/* remove a usb device from list */
 	int (*remove) (USB_SEARCHMAN* searchman, UINT16 idVendor, UINT16 idProduct);
 	/* check list has next device*/
@@ -74,5 +74,5 @@ struct _USB_SEARCHMAN
 
 USB_SEARCHMAN* searchman_new(void* urbdrc, UINT32 UsbDevice);
 
-#endif
+#endif /* FREERDP_CHANNEL_URBDRC_CLIENT_SEARCHMAN_H */
 

@@ -54,6 +54,8 @@ BOOL wf_mirror_driver_find_display_device(wfInfo* wfi)
 			{
 				deviceKeyLength = _tcslen(deviceInfo.DeviceKey) - deviceKeyPrefixLength;
 				wfi->deviceKey = (LPTSTR) malloc((deviceKeyLength + 1) * sizeof(TCHAR));
+				if (!wfi->deviceKey)
+					return FALSE;
 
 				_tcsncpy_s(wfi->deviceKey, deviceKeyLength + 1,
 					&deviceInfo.DeviceKey[deviceKeyPrefixLength], deviceKeyLength);
@@ -92,7 +94,7 @@ BOOL wf_mirror_driver_display_device_attach(wfInfo* wfi, DWORD mode)
 
 	if (status != ERROR_SUCCESS)
 	{
-		WLog_DBG(TAG, "Error opening RegKey: status=%0X", status);
+		WLog_DBG(TAG, "Error opening RegKey: status=0x%08lX", status);
 
 		if (status == ERROR_ACCESS_DENIED)
 			WLog_DBG(TAG, "access denied. Do you have admin privleges?");
@@ -106,7 +108,7 @@ BOOL wf_mirror_driver_display_device_attach(wfInfo* wfi, DWORD mode)
 
 	if (status != ERROR_SUCCESS)
 	{
-		WLog_DBG(TAG, "Error querying RegKey: status=%0X", status);
+		WLog_DBG(TAG, "Error querying RegKey: status=0x%08lX", status);
 
 		if (status == ERROR_ACCESS_DENIED)
 			WLog_DBG(TAG, "access denied. Do you have admin privleges?");
@@ -124,7 +126,7 @@ BOOL wf_mirror_driver_display_device_attach(wfInfo* wfi, DWORD mode)
 
 		if (status != ERROR_SUCCESS)
 		{
-			WLog_DBG(TAG, "Error writing registry key: %d ", status);
+			WLog_DBG(TAG, "Error writing registry key: %ld", status);
 
 			if (status == ERROR_ACCESS_DENIED)
 				WLog_DBG(TAG, "access denied. Do you have admin privleges?");
@@ -181,9 +183,9 @@ void wf_mirror_driver_print_display_change_status(LONG status)
 	}
 
 	if (status != DISP_CHANGE_SUCCESSFUL)
-		WLog_ERR(TAG, "ChangeDisplaySettingsEx() failed with %s (%d)", disp_change, status);
+		WLog_ERR(TAG, "ChangeDisplaySettingsEx() failed with %s (%ld)", disp_change, status);
 	else
-		WLog_INFO(TAG, "ChangeDisplaySettingsEx() succeeded with %s (%d)", disp_change, status);
+		WLog_INFO(TAG, "ChangeDisplaySettingsEx() succeeded with %s (%ld)", disp_change, status);
 }
 
 /**
@@ -210,6 +212,8 @@ BOOL wf_mirror_driver_update(wfInfo* wfi, int mode)
 	}
 	
 	deviceMode = (DEVMODE*) malloc(sizeof(DEVMODE) + EXT_DEVMODE_SIZE_MAX);
+	if (!deviceMode)
+		return FALSE;
 	deviceMode->dmDriverExtra = 2 * sizeof(DWORD);
 
 	extHdr = (DWORD*)((BYTE*) &deviceMode + sizeof(DEVMODE)); 
@@ -271,15 +275,16 @@ BOOL wf_mirror_driver_map_memory(wfInfo* wfi)
 				0, NULL );
 
 			// Display the error message and exit the process
-			WLog_ERR(TAG, "CreateDC failed on device [%s] with error %d: %s", wfi->deviceName, dw, lpMsgBuf);
+			WLog_ERR(TAG, "CreateDC failed on device [%s] with error %lu: %s", wfi->deviceName, dw, lpMsgBuf);
 			LocalFree(lpMsgBuf);
 		}
 
 		return FALSE;
 	}
 
-	wfi->changeBuffer = malloc(sizeof(GETCHANGESBUF));
-	ZeroMemory(wfi->changeBuffer, sizeof(GETCHANGESBUF));
+	wfi->changeBuffer = calloc(1, sizeof(GETCHANGESBUF));
+	if (!wfi->changeBuffer)
+		return FALSE;
 
 	status = ExtEscape(wfi->driverDC, dmf_esc_usm_pipe_map, 0, 0, sizeof(GETCHANGESBUF), (LPSTR) wfi->changeBuffer);
 
@@ -311,7 +316,7 @@ BOOL wf_mirror_driver_cleanup(wfInfo* wfi)
 
 		if (status == 0)
 		{
-			WLog_ERR(TAG, "Failed to release DC!"));
+			WLog_ERR(TAG, "Failed to release DC!");
 		}
 	}
 

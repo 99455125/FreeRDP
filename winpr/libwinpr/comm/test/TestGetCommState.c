@@ -57,7 +57,9 @@ static BOOL test_generic(HANDLE hComm)
 		return FALSE;
 	}
 
-	pDcb = (DCB*)calloc(1, sizeof(DCB) * 2);
+	pDcb = (DCB*)calloc(2, sizeof(DCB));
+	if (!pDcb)
+		return FALSE;
 	pDcb->DCBlength = sizeof(DCB) * 2;
 	result = GetCommState(hComm, pDcb);
 	result = result && (pDcb->DCBlength == sizeof(DCB) * 2);

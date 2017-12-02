@@ -1,6 +1,12 @@
 
 project(MacFreeRDP-library)
 
+
+if(${CMAKE_VERSION} GREATER 2.8.12)
+	cmake_policy(SET CMP0026 OLD)
+	cmake_policy(SET CMP0045 OLD)
+endif()
+
 set(MODULE_NAME "MacFreeRDP-library")
 set(MODULE_OUTPUT_NAME "MacFreeRDP")
 set(MODULE_PREFIX "FREERDP_CLIENT_MAC_LIBRARY")
@@ -77,8 +83,7 @@ set_target_properties(${MODULE_NAME} PROPERTIES
 	MACOSX_FRAMEWORK_SHORT_VERSION_STRING 1.1.0
 	MACOSX_FRAMEWORK_BUNDLE_BUNDLE_VERSION 1.1.0
 	INSTALL_NAME_DIR "@executable_path/../Frameworks"
-	MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_BINARY_DIR}/Info.plist
-	BUILD_WITH_INSTALL_RPATH 1)  
+	MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_BINARY_DIR}/Info.plist)
 
 set(${MODULE_PREFIX}_LIBS ${${MODULE_PREFIX}_LIBS} ${EXTRA_LIBS} freerdp-client)
 set(${MODULE_PREFIX}_LIBS ${${MODULE_PREFIX}_LIBS} winpr freerdp)
@@ -111,11 +116,11 @@ if (${BUILD_SHARED_LIBS})
 			COMMENT "Copying ${LIB} to output directory"
 			COMMAND install_name_tool -change "$<TARGET_SONAME_FILE:${LIB}>"
 				"@executable_path/../Frameworks/${MODULE_OUTPUT_NAME}.framework/Contents/$<TARGET_FILE_NAME:${LIB}>"
-				"${CMAKE_CURRENT_BINARY_DIR}/$(CONFIGURATION)/${MODULE_OUTPUT_NAME}.framework/${MODULE_NAME}"
+				"${CMAKE_CURRENT_BINARY_DIR}/$(CONFIGURATION)/${MODULE_OUTPUT_NAME}.framework/${MODULE_OUTPUT_NAME}"
 			COMMENT Setting install name for ${LIB}
 			COMMAND "${CMAKE_COMMAND}" -E echo install_name_tool -change "$<TARGET_SONAME_FILE:${LIB}>"
 				"@executable_path/../Frameworks/${MODULE_OUTPUT_NAME}.framework/Contents/$<TARGET_FILE_NAME:${LIB}>"
-				"${CMAKE_CURRENT_BINARY_DIR}/$(CONFIGURATION)/${MODULE_OUTPUT_NAME}.framework/${MODULE_NAME}")
+				"${CMAKE_CURRENT_BINARY_DIR}/$(CONFIGURATION)/${MODULE_OUTPUT_NAME}.framework/${MODULE_OUTPUT_NAME}")
 	endforeach()
 
 	# Call install_name_tool to reassign the library install names in dependent libraries

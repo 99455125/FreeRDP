@@ -2,6 +2,7 @@
 #include <winpr/crt.h>
 #include <winpr/print.h>
 #include <winpr/crypto.h>
+#include <winpr/ssl.h>
 #include <winpr/wlog.h>
 
 static const char* SECRET_PASSWORD_TEST = "MySecretPassword123!";
@@ -17,8 +18,14 @@ int TestCryptoProtectMemory(int argc, char* argv[])
 	cbCipherText = cbPlainText + (CRYPTPROTECTMEMORY_BLOCK_SIZE - (cbPlainText % CRYPTPROTECTMEMORY_BLOCK_SIZE));
 	printf("cbPlainText: %d cbCipherText: %d\n", cbPlainText, cbCipherText);
 	pCipherText = (BYTE*) malloc(cbCipherText);
+	if (!pCipherText)
+	{
+		printf("Unable to allocate memory\n");
+		return -1;
+	}
 	CopyMemory(pCipherText, pPlainText, cbPlainText);
 	ZeroMemory(&pCipherText[cbPlainText], (cbCipherText - cbPlainText));
+	winpr_InitializeSSL(WINPR_SSL_INIT_DEFAULT);
 
 	if (!CryptProtectMemory(pCipherText, cbCipherText, CRYPTPROTECTMEMORY_SAME_PROCESS))
 	{

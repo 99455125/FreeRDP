@@ -17,10 +17,11 @@
  * limitations under the License.
  */
 
-#ifndef __ERRINFO_H
-#define __ERRINFO_H
+#ifndef FREERDP_LIB_CORE_ERRINFO_H
+#define FREERDP_LIB_CORE_ERRINFO_H
 
 #include <freerdp/freerdp.h>
+#include <freerdp/api.h>
 
 struct _ERRINFO
 {
@@ -30,8 +31,6 @@ struct _ERRINFO
 };
 typedef struct _ERRINFO ERRINFO;
 
-#define ERRINFO_DEFINE(_code)	{ ERRINFO_##_code , "ERRINFO_" #_code , ERRINFO_##_code##_STRING }
+FREERDP_LOCAL void rdp_print_errinfo(UINT32 code);
 
-void rdp_print_errinfo(UINT32 code);
-
-#endif
+#endif /* FREERDP_LIB_CORE_ERRINFO_H */

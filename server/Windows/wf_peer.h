@@ -17,8 +17,8 @@
  * limitations under the License.
  */
 
-#ifndef WF_PEER_H
-#define WF_PEER_H
+#ifndef FREERDP_SERVER_WIN_PEER_H
+#define FREERDP_SERVER_WIN_PEER_H
 
 #include "wf_interface.h"
 
@@ -26,10 +26,10 @@
 
 
 
-void wf_peer_context_new(freerdp_peer* client, wfPeerContext* context);
+BOOL wf_peer_context_new(freerdp_peer* client, wfPeerContext* context);
 void wf_peer_context_free(freerdp_peer* client, wfPeerContext* context);
 
-void wf_peer_init(freerdp_peer* client);
+BOOL wf_peer_init(freerdp_peer* client);
 
 void wf_dxgi_encode(freerdp_peer* client, UINT timeout);
 void wf_rfx_encode(freerdp_peer* client);
@@ -43,9 +43,9 @@ void wf_peer_send_changes(freerdp_peer* client);
 
 void wf_detect_win_ver(void);
 
-void wf_peer_accepted(freerdp_listener* instance, freerdp_peer* client);
+BOOL wf_peer_accepted(freerdp_listener* instance, freerdp_peer* client);
 
 DWORD WINAPI wf_peer_main_loop(LPVOID lpParam);
 
 
-#endif /* WF_PEER_H */
+#endif /* FREERDP_SERVER_WIN_PEER_H */

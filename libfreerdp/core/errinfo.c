@@ -29,6 +29,8 @@
 
 #define TAG FREERDP_TAG("core")
 
+#define ERRINFO_DEFINE(_code)	    { ERRINFO_##_code , "ERRINFO_" #_code , ERRINFO_##_code##_STRING }
+
 int connectErrorCode;
 
 /* Protocol-independent codes */
@@ -567,12 +569,12 @@ void rdp_print_errinfo(UINT32 code)
 	{
 		if (code == errInfo->code)
 		{
-			WLog_ERR(TAG,  "%s (0x%08X):%s", errInfo->name, code, errInfo->info);
+			WLog_INFO(TAG,  "%s (0x%08"PRIX32"):%s", errInfo->name, code, errInfo->info);
 			return;
 		}
 
 		errInfo++;
 	}
 
-	WLog_ERR(TAG,  "ERRINFO_UNKNOWN 0x%08X: Unknown error.", code);
+	WLog_ERR(TAG,  "ERRINFO_UNKNOWN 0x%08"PRIX32": Unknown error.", code);
 }

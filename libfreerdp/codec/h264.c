@@ -3,6 +3,7 @@
  * H.264 Bitmap Compression
  *
  * Copyright 2014 Mike McDonald <Mike.McDonald@software.dell.com>
+ * Copyright 2017 David Fort <contact@hardening-consulting.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +24,9 @@
 
 #include <winpr/crt.h>
 #include <winpr/print.h>
+#include <winpr/library.h>
 #include <winpr/bitstream.h>
+#include <winpr/synch.h>
 
 #include <freerdp/primitives.h>
 #include <freerdp/codec/h264.h>
@@ -31,504 +34,478 @@
 
 #define TAG FREERDP_TAG("codec")
 
-/**
- * Dummy subsystem
- */
-
-static int dummy_decompress(H264_CONTEXT* h264, BYTE* pSrcData, UINT32 SrcSize)
+BOOL avc420_ensure_buffer(H264_CONTEXT* h264, UINT32 stride, UINT32 width, UINT32 height)
 {
-	return -1;
-}
+	if (!h264)
+		return FALSE;
 
-static void dummy_uninit(H264_CONTEXT* h264)
-{
+	if (stride == 0)
+		stride = width;
 
-}
+	if (!h264->pYUVData[0] || !h264->pYUVData[1] || !h264->pYUVData[2] ||
+		(width != h264->width) || (height != h264->height) || (stride != h264->iStride[0]))
+	{
+		h264->iStride[0] = stride;
+		h264->iStride[1] = (stride + 1) / 2;
+		h264->iStride[2] = (stride + 1) / 2;
+		h264->width = width;
+		h264->height = height;
 
-static BOOL dummy_init(H264_CONTEXT* h264)
-{
+		_aligned_free(h264->pYUVData[0]);
+		_aligned_free(h264->pYUVData[1]);
+		_aligned_free(h264->pYUVData[2]);
+		h264->pYUVData[0] = _aligned_malloc(h264->iStride[0] * height, 16);
+		h264->pYUVData[1] = _aligned_malloc(h264->iStride[1] * height, 16);
+		h264->pYUVData[2] = _aligned_malloc(h264->iStride[2] * height, 16);
+
+		if (!h264->pYUVData[0] || !h264->pYUVData[1] || !h264->pYUVData[2])
+			return FALSE;
+	}
+
 	return TRUE;
 }
 
-static H264_CONTEXT_SUBSYSTEM g_Subsystem_dummy =
+
+static BOOL check_rect(const H264_CONTEXT* h264, const RECTANGLE_16* rect,
+                       UINT32 nDstWidth, UINT32 nDstHeight)
 {
-	"dummy",
-	dummy_init,
-	dummy_uninit,
-	dummy_decompress
-};
+	/* Check, if the output rectangle is valid in decoded h264 frame. */
+	if ((rect->right > h264->width) || (rect->left > h264->width))
+		return FALSE;
 
-/**
- * OpenH264 subsystem
- */
+	if ((rect->top > h264->height) || (rect->bottom > h264->height))
+		return FALSE;
 
-#ifdef WITH_OPENH264
+	/* Check, if the output rectangle is valid in destination buffer. */
+	if ((rect->right > nDstWidth) || (rect->left > nDstWidth))
+		return FALSE;
 
-#include "wels/codec_def.h"
-#include "wels/codec_api.h"
-
-struct _H264_CONTEXT_OPENH264
-{
-	ISVCDecoder* pDecoder;
-};
-typedef struct _H264_CONTEXT_OPENH264 H264_CONTEXT_OPENH264;
-
-static BOOL g_openh264_trace_enabled = FALSE;
-
-static void openh264_trace_callback(H264_CONTEXT* h264, int level, const char* message)
-{
-	WLog_INFO(TAG, "%d - %s", level, message);
-}
-
-static int openh264_decompress(H264_CONTEXT* h264, BYTE* pSrcData, UINT32 SrcSize)
-{
-	DECODING_STATE state;
-	SBufferInfo sBufferInfo;
-	SSysMEMBuffer* pSystemBuffer;
-	H264_CONTEXT_OPENH264* sys = (H264_CONTEXT_OPENH264*) h264->pSystemData;
-
-	if (!sys->pDecoder)
-		return -1;
-
-	/*
-	 * Decompress the image.  The RDP host only seems to send I420 format.
-	 */
-
-	h264->pYUVData[0] = NULL;
-	h264->pYUVData[1] = NULL;
-	h264->pYUVData[2] = NULL;
-
-	ZeroMemory(&sBufferInfo, sizeof(sBufferInfo));
-
-	state = (*sys->pDecoder)->DecodeFrame2(
-		sys->pDecoder,
-		pSrcData,
-		SrcSize,
-		h264->pYUVData,
-		&sBufferInfo);
-
-	/**
-	 * Calling DecodeFrame2 twice apparently works around Openh264 issue #1136:
-	 * https://github.com/cisco/openh264/issues/1136
-	 *
-	 * This is a hack, but it works and it is only necessary for the first frame.
-	 */
-
-	if (sBufferInfo.iBufferStatus != 1)
-		state = (*sys->pDecoder)->DecodeFrame2(sys->pDecoder, NULL, 0, h264->pYUVData, &sBufferInfo);
-
-	pSystemBuffer = &sBufferInfo.UsrData.sSystemBuffer;
-
-#if 0
-	WLog_INFO(TAG, "h264_decompress: state=%u, pYUVData=[%p,%p,%p], bufferStatus=%d, width=%d, height=%d, format=%d, stride=[%d,%d]",
-		state, h264->pYUVData[0], h264->pYUVData[1], h264->pYUVData[2], sBufferInfo.iBufferStatus,
-		pSystemBuffer->iWidth, pSystemBuffer->iHeight, pSystemBuffer->iFormat,
-		pSystemBuffer->iStride[0], pSystemBuffer->iStride[1]);
-#endif
-
-	if (state != 0)
-		return -1;
-
-	if (sBufferInfo.iBufferStatus != 1)
-		return -2;
-
-	if (pSystemBuffer->iFormat != videoFormatI420)
-		return -1;
-
-	if (!h264->pYUVData[0] || !h264->pYUVData[1] || !h264->pYUVData[2])
-		return -1;
-
-	h264->iStride[0] = pSystemBuffer->iStride[0];
-	h264->iStride[1] = pSystemBuffer->iStride[1];
-	h264->iStride[2] = pSystemBuffer->iStride[1];
-
-	h264->width = pSystemBuffer->iWidth;
-	h264->height = pSystemBuffer->iHeight;
-
-	return 1;
-}
-
-static void openh264_uninit(H264_CONTEXT* h264)
-{
-	H264_CONTEXT_OPENH264* sys = (H264_CONTEXT_OPENH264*) h264->pSystemData;
-
-	if (sys)
-	{
-		if (sys->pDecoder)
-		{
-			(*sys->pDecoder)->Uninitialize(sys->pDecoder);
-			WelsDestroyDecoder(sys->pDecoder);
-			sys->pDecoder = NULL;
-		}
-
-		free(sys);
-		h264->pSystemData = NULL;
-	}
-}
-
-static BOOL openh264_init(H264_CONTEXT* h264)
-{
-	long status;
-	SDecodingParam sDecParam;
-	H264_CONTEXT_OPENH264* sys;
-	static int traceLevel = WELS_LOG_DEBUG;
-	static EVideoFormatType videoFormat = videoFormatI420;
-	static WelsTraceCallback traceCallback = (WelsTraceCallback) openh264_trace_callback;
-
-	sys = (H264_CONTEXT_OPENH264*) calloc(1, sizeof(H264_CONTEXT_OPENH264));
-
-	if (!sys)
-	{
-		goto EXCEPTION;
-	}
-
-	h264->pSystemData = (void*) sys;
-
-	WelsCreateDecoder(&sys->pDecoder);
-
-	if (!sys->pDecoder)
-	{
-		WLog_ERR(TAG, "Failed to create OpenH264 decoder");
-		goto EXCEPTION;
-	}
-
-	ZeroMemory(&sDecParam, sizeof(sDecParam));
-	sDecParam.iOutputColorFormat  = videoFormatI420;
-	sDecParam.uiEcActiveFlag = 1;
-	sDecParam.sVideoProperty.eVideoBsType = VIDEO_BITSTREAM_DEFAULT;
-
-	status = (*sys->pDecoder)->Initialize(sys->pDecoder, &sDecParam);
-
-	if (status != 0)
-	{
-		WLog_ERR(TAG, "Failed to initialize OpenH264 decoder (status=%ld)", status);
-		goto EXCEPTION;
-	}
-
-	status = (*sys->pDecoder)->SetOption(sys->pDecoder, DECODER_OPTION_DATAFORMAT, &videoFormat);
-
-	if (status != 0)
-	{
-		WLog_ERR(TAG, "Failed to set data format option on OpenH264 decoder (status=%ld)", status);
-	}
-
-	if (g_openh264_trace_enabled)
-	{
-		status = (*sys->pDecoder)->SetOption(sys->pDecoder, DECODER_OPTION_TRACE_LEVEL, &traceLevel);
-
-		if (status != 0)
-		{
-			WLog_ERR(TAG, "Failed to set trace level option on OpenH264 decoder (status=%ld)", status);
-		}
-
-		status = (*sys->pDecoder)->SetOption(sys->pDecoder, DECODER_OPTION_TRACE_CALLBACK, &traceCallback);
-
-		if (status != 0)
-		{
-			WLog_ERR(TAG, "Failed to set trace callback option on OpenH264 decoder (status=%ld)", status);
-		}
-
-		status = (*sys->pDecoder)->SetOption(sys->pDecoder, DECODER_OPTION_TRACE_CALLBACK_CONTEXT, &h264);
-
-		if (status != 0)
-		{
-			WLog_ERR(TAG, "Failed to set trace callback context option on OpenH264 decoder (status=%ld)", status);
-		}
-	}
+	if ((rect->bottom > nDstHeight) || (rect->top > nDstHeight))
+		return FALSE;
 
 	return TRUE;
-
-EXCEPTION:
-	openh264_uninit(h264);
-
-	return FALSE;
 }
 
-static H264_CONTEXT_SUBSYSTEM g_Subsystem_OpenH264 =
+static BOOL avc_yuv_to_rgb(H264_CONTEXT* h264, const RECTANGLE_16* regionRects,
+                           UINT32 numRegionRects, UINT32 nDstWidth,
+                           UINT32 nDstHeight, UINT32 nDstStep, BYTE* pDstData,
+                           DWORD DstFormat, BOOL use444)
 {
-	"OpenH264",
-	openh264_init,
-	openh264_uninit,
-	openh264_decompress
-};
-
-#endif
-
-/**
- * libavcodec subsystem
- */
-
-#ifdef WITH_LIBAVCODEC
-
-#include <libavcodec/avcodec.h>
-#include <libavutil/avutil.h>
-
-struct _H264_CONTEXT_LIBAVCODEC
-{
-	AVCodec* codec;
-	AVCodecContext* codecContext;
-	AVCodecParserContext* codecParser;
-	AVFrame* videoFrame;
-};
-typedef struct _H264_CONTEXT_LIBAVCODEC H264_CONTEXT_LIBAVCODEC;
-
-static int libavcodec_decompress(H264_CONTEXT* h264, BYTE* pSrcData, UINT32 SrcSize)
-{
-	int status;
-	int gotFrame = 0;
-	AVPacket packet;
-	H264_CONTEXT_LIBAVCODEC* sys = (H264_CONTEXT_LIBAVCODEC*) h264->pSystemData;
-
-	av_init_packet(&packet);
-
-	packet.data = pSrcData;
-	packet.size = SrcSize;
-
-	status = avcodec_decode_video2(sys->codecContext, sys->videoFrame, &gotFrame, &packet);
-
-	if (status < 0)
-	{
-		WLog_ERR(TAG, "Failed to decode video frame (status=%d)", status);
-		return -1;
-	}
-
-#if 0
-	WLog_INFO(TAG, "libavcodec_decompress: frame decoded (status=%d, gotFrame=%d, width=%d, height=%d, Y=[%p,%d], U=[%p,%d], V=[%p,%d])",
-		status, gotFrame, sys->videoFrame->width, sys->videoFrame->height,
-		sys->videoFrame->data[0], sys->videoFrame->linesize[0],
-		sys->videoFrame->data[1], sys->videoFrame->linesize[1],
-		sys->videoFrame->data[2], sys->videoFrame->linesize[2]);
-#endif
-
-	if (gotFrame)
-	{
-		h264->pYUVData[0] = sys->videoFrame->data[0];
-		h264->pYUVData[1] = sys->videoFrame->data[1];
-		h264->pYUVData[2] = sys->videoFrame->data[2];
-
-		h264->iStride[0] = sys->videoFrame->linesize[0];
-		h264->iStride[1] = sys->videoFrame->linesize[1];
-		h264->iStride[2] = sys->videoFrame->linesize[2];
-
-		h264->width = sys->videoFrame->width;
-		h264->height = sys->videoFrame->height;
-	}
-	else
-		return -2;
-
-	return 1;
-}
-
-static void libavcodec_uninit(H264_CONTEXT* h264)
-{
-	H264_CONTEXT_LIBAVCODEC* sys = (H264_CONTEXT_LIBAVCODEC*) h264->pSystemData;
-
-	if (!sys)
-		return;
-
-	if (sys->videoFrame)
-	{
-		av_free(sys->videoFrame);
-	}
-
-	if (sys->codecParser)
-	{
-		av_parser_close(sys->codecParser);
-	}
-
-	if (sys->codecContext)
-	{
-		avcodec_close(sys->codecContext);
-		av_free(sys->codecContext);
-	}
-
-	free(sys);
-	h264->pSystemData = NULL;
-}
-
-static BOOL libavcodec_init(H264_CONTEXT* h264)
-{
-	H264_CONTEXT_LIBAVCODEC* sys;
-
-	sys = (H264_CONTEXT_LIBAVCODEC*) calloc(1, sizeof(H264_CONTEXT_LIBAVCODEC));
-
-	if (!sys)
-	{
-		goto EXCEPTION;
-	}
-
-	h264->pSystemData = (void*) sys;
-
-	avcodec_register_all();
-
-	sys->codec = avcodec_find_decoder(CODEC_ID_H264);
-
-	if (!sys->codec)
-	{
-		WLog_ERR(TAG, "Failed to find libav H.264 codec");
-		goto EXCEPTION;
-	}
-
-	sys->codecContext = avcodec_alloc_context3(sys->codec);
-
-	if (!sys->codecContext)
-	{
-		WLog_ERR(TAG, "Failed to allocate libav codec context");
-		goto EXCEPTION;
-	}
-
-	if (sys->codec->capabilities & CODEC_CAP_TRUNCATED)
-	{
-		sys->codecContext->flags |= CODEC_FLAG_TRUNCATED;
-	}
-
-	if (avcodec_open2(sys->codecContext, sys->codec, NULL) < 0)
-	{
-		WLog_ERR(TAG, "Failed to open libav codec");
-		goto EXCEPTION;
-	}
-
-	sys->codecParser = av_parser_init(CODEC_ID_H264);
-
-	if (!sys->codecParser)
-	{
-		WLog_ERR(TAG, "Failed to initialize libav parser");
-		goto EXCEPTION;
-	}
-
-	sys->videoFrame = avcodec_alloc_frame();
-
-	if (!sys->videoFrame)
-	{
-		WLog_ERR(TAG, "Failed to allocate libav frame");
-		goto EXCEPTION;
-	}
-
-	return TRUE;
-
-EXCEPTION:
-	libavcodec_uninit(h264);
-
-	return FALSE;
-}
-
-static H264_CONTEXT_SUBSYSTEM g_Subsystem_libavcodec =
-{
-	"libavcodec",
-	libavcodec_init,
-	libavcodec_uninit,
-	libavcodec_decompress
-};
-
-#endif
-
-int h264_decompress(H264_CONTEXT* h264, BYTE* pSrcData, UINT32 SrcSize,
-		BYTE** ppDstData, DWORD DstFormat, int nDstStep, int nDstHeight, RDPGFX_RECT16* regionRects, int numRegionRects)
-{
-	int index;
-	int status;
-	int* iStride;
-	BYTE* pDstData;
+	UINT32 x;
 	BYTE* pDstPoint;
 	prim_size_t roi;
-	BYTE** pYUVData;
-	int width, height;
-	BYTE* pYUVPoint[3];
-	RDPGFX_RECT16* rect;
-	int UncompressedSize;
-	primitives_t *prims = primitives_get();
+	INT32 width, height;
+	const BYTE* pYUVPoint[3];
+	primitives_t* prims = primitives_get();
 
-	if (!h264)
-		return -1;
-
-#if 0
-	WLog_INFO(TAG, "h264_decompress: pSrcData=%p, SrcSize=%u, pDstData=%p, nDstStep=%d, nDstHeight=%d, numRegionRects=%d",
-		pSrcData, SrcSize, *ppDstData, nDstStep, nDstHeight, numRegionRects);
-#endif
-
-	if (!(pDstData = *ppDstData))
-		return -1;
-
-	if ((status = h264->subsystem->Decompress(h264, pSrcData, SrcSize)) < 0)
-		return status;
-
-	UncompressedSize = h264->width * h264->height * 4;
-
-	if (UncompressedSize > (nDstStep * nDstHeight))
-		return -1;
-
-	pYUVData = h264->pYUVData;
-	iStride = h264->iStride;
-
-	for (index = 0; index < numRegionRects; index++)
+	for (x = 0; x < numRegionRects; x++)
 	{
-		rect = &(regionRects[index]);
+		const RECTANGLE_16* rect = &(regionRects[x]);
+		const UINT32* iStride;
+		BYTE** ppYUVData;
+
+		if (use444)
+		{
+			iStride = h264->iYUV444Stride;
+			ppYUVData = h264->pYUV444Data;
+		}
+		else
+		{
+			iStride = h264->iStride;
+			ppYUVData = h264->pYUVData;
+		}
+
+		if (!check_rect(h264, rect, nDstWidth, nDstHeight))
+			return FALSE;
 
 		width = rect->right - rect->left;
 		height = rect->bottom - rect->top;
-		
 		pDstPoint = pDstData + rect->top * nDstStep + rect->left * 4;
-		pYUVPoint[0] = pYUVData[0] + rect->top * iStride[0] + rect->left;
+		pYUVPoint[0] = ppYUVData[0] + rect->top * iStride[0] + rect->left;
+		pYUVPoint[1] = ppYUVData[1];
+		pYUVPoint[2] = ppYUVData[2];
 
-		pYUVPoint[1] = pYUVData[1] + rect->top/2 * iStride[1] + rect->left/2;
-		pYUVPoint[2] = pYUVData[2] + rect->top/2 * iStride[2] + rect->left/2;
-
-#if 0
-		WLog_INFO(TAG, "regionRect: x: %d y: %d width: %d height: %d",
-		       rect->left, rect->top, width, height);
-#endif
+		if (use444)
+		{
+			pYUVPoint[1] += rect->top * iStride[1] + rect->left;
+			pYUVPoint[2] += rect->top * iStride[2] + rect->left;
+		}
+		else
+		{
+			pYUVPoint[1] += rect->top / 2 * iStride[1] + rect->left / 2;
+			pYUVPoint[2] += rect->top / 2 * iStride[2] + rect->left / 2;
+		}
 
 		roi.width = width;
 		roi.height = height;
 
-		prims->YUV420ToRGB_8u_P3AC4R((const BYTE**) pYUVPoint, iStride, pDstPoint, nDstStep, &roi);
+		if (use444)
+		{
+			if (prims->YUV444ToRGB_8u_P3AC4R(
+			        pYUVPoint, iStride, pDstPoint, nDstStep,
+			        DstFormat, &roi) != PRIMITIVES_SUCCESS)
+			{
+				return FALSE;
+			}
+		}
+		else
+		{
+			if (prims->YUV420ToRGB_8u_P3AC4R(
+			        pYUVPoint, iStride, pDstPoint, nDstStep,
+			        DstFormat, &roi) != PRIMITIVES_SUCCESS)
+				return FALSE;
+		}
 	}
 
+	return TRUE;
+}
+
+INT32 avc420_decompress(H264_CONTEXT* h264, const BYTE* pSrcData, UINT32 SrcSize,
+                        BYTE* pDstData, DWORD DstFormat, UINT32 nDstStep,
+                        UINT32 nDstWidth, UINT32 nDstHeight,
+                        RECTANGLE_16* regionRects, UINT32 numRegionRects)
+{
+	int status;
+
+	if (!h264)
+		return -1001;
+
+	status = h264->subsystem->Decompress(h264, pSrcData, SrcSize);
+
+	if (status == 0)
+		return 1;
+
+	if (status < 0)
+		return status;
+
+	if (!avc_yuv_to_rgb(h264, regionRects, numRegionRects, nDstWidth,
+	                    nDstHeight, nDstStep, pDstData, DstFormat, FALSE))
+		return -1002;
+
 	return 1;
 }
 
-int h264_compress(H264_CONTEXT* h264, BYTE* pSrcData, UINT32 SrcSize, BYTE** ppDstData, UINT32* pDstSize)
+INT32 avc420_compress(H264_CONTEXT* h264, const BYTE* pSrcData, DWORD SrcFormat,
+                      UINT32 nSrcStep, UINT32 nSrcWidth, UINT32 nSrcHeight,
+                      BYTE** ppDstData, UINT32* pDstSize)
 {
-	return 1;
+	prim_size_t roi;
+	primitives_t* prims = primitives_get();
+
+	if (!h264)
+		return -1;
+
+	if (!h264->subsystem->Compress)
+		return -1;
+
+	if (!avc420_ensure_buffer(h264, nSrcStep, nSrcWidth, nSrcHeight))
+		return -1;
+
+	roi.width = nSrcWidth;
+	roi.height = nSrcHeight;
+	if (prims->RGBToYUV420_8u_P3AC4R(pSrcData, SrcFormat, nSrcStep, h264->pYUVData, h264->iStride,
+								 &roi) != PRIMITIVES_SUCCESS)
+		return -1;
+
+	return h264->subsystem->Compress(h264, ppDstData, pDstSize);
 }
 
-BOOL h264_context_init(H264_CONTEXT* h264)
+INT32 avc444_compress(H264_CONTEXT* h264, const BYTE* pSrcData, DWORD SrcFormat,
+                      UINT32 nSrcStep, UINT32 nSrcWidth, UINT32 nSrcHeight,
+                      BYTE* op, BYTE** ppDstData, UINT32* pDstSize,
+                      BYTE** ppAuxDstData, UINT32* pAuxDstSize)
 {
-#ifdef WITH_LIBAVCODEC
-	if (g_Subsystem_libavcodec.Init(h264))
+	return -1;
+}
+
+static BOOL avc444_ensure_buffer(H264_CONTEXT* h264,
+                                 DWORD nDstHeight)
+{
+	UINT32 x;
+	const UINT32* piMainStride = h264->iStride;
+	UINT32* piDstSize = h264->iYUV444Size;
+	UINT32* piDstStride = h264->iYUV444Stride;
+	BYTE** ppYUVDstData = h264->pYUV444Data;
+	UINT32 padDstHeight = nDstHeight + 16; /* Need alignment to 16x16 blocks */
+
+	if ((piMainStride[0] != piDstStride[0]) ||
+	    (piDstSize[0] != piMainStride[0] * padDstHeight))
 	{
-		h264->subsystem = &g_Subsystem_libavcodec;
-		return TRUE;
+		for (x = 0; x < 3; x++)
+		{
+			piDstStride[x] = piMainStride[0];
+			piDstSize[x] = piDstStride[x] * padDstHeight;
+			_aligned_free(ppYUVDstData[x]);
+			ppYUVDstData[x] = _aligned_malloc(piDstSize[x], 16);
+
+			if (!ppYUVDstData[x])
+				goto fail;
+
+			memset(ppYUVDstData[x], 0, piDstSize[x]);
+		}
+	}
+
+	for (x = 0; x < 3; x++)
+	{
+		if (!ppYUVDstData[x] || (piDstSize[x] == 0) || (piDstStride[x] == 0))
+		{
+			WLog_ERR(TAG, "YUV buffer not initialized! check your decoder settings");
+			goto fail;
+		}
+	}
+
+	return TRUE;
+fail:
+	_aligned_free(ppYUVDstData[0]);
+	_aligned_free(ppYUVDstData[1]);
+	_aligned_free(ppYUVDstData[2]);
+	ppYUVDstData[0] = NULL;
+	ppYUVDstData[1] = NULL;
+	ppYUVDstData[2] = NULL;
+	return FALSE;
+}
+
+static BOOL avc444_process_rects(H264_CONTEXT* h264, const BYTE* pSrcData,
+                                 UINT32 SrcSize, BYTE* pDstData, UINT32 DstFormat, UINT32 nDstStep,
+                                 UINT32 nDstWidth, UINT32 nDstHeight,
+                                 const RECTANGLE_16* rects, UINT32 nrRects,
+                                 avc444_frame_type type)
+{
+	const primitives_t* prims = primitives_get();
+	UINT32 x;
+	UINT32* piDstStride = h264->iYUV444Stride;
+	BYTE** ppYUVDstData = h264->pYUV444Data;
+	const UINT32* piStride = h264->iStride;
+	const BYTE** ppYUVData = (const BYTE**)h264->pYUVData;
+
+	if (h264->subsystem->Decompress(h264, pSrcData, SrcSize) < 0)
+		return FALSE;
+
+	if (!avc444_ensure_buffer(h264, nDstHeight))
+		return FALSE;
+
+	for (x = 0; x < nrRects; x++)
+	{
+		const RECTANGLE_16* rect = &rects[x];
+		const UINT32 alignedWidth = h264->width + ((h264->width % 16 != 0) ? 16 - h264->width % 16 : 0);
+		const UINT32 alignedHeight = h264->height + ((h264->height % 16 != 0) ? 16 - h264->height % 16 : 0);
+
+		if (!check_rect(h264, rect, nDstWidth, nDstHeight))
+			continue;
+
+		if (prims->YUV420CombineToYUV444(type, ppYUVData, piStride,
+		                                 alignedWidth, alignedHeight,
+		                                 ppYUVDstData, piDstStride,
+		                                 rect) != PRIMITIVES_SUCCESS)
+			return FALSE;
+	}
+
+	if (!avc_yuv_to_rgb(h264, rects, nrRects, nDstWidth,
+	                    nDstHeight, nDstStep, pDstData, DstFormat, TRUE))
+		return FALSE;
+
+	return TRUE;
+}
+
+#if defined(AVC444_FRAME_STAT)
+static UINT64 op1 = 0;
+static double op1sum = 0;
+static UINT64 op2 = 0;
+static double op2sum = 0;
+static UINT64 op3 = 0;
+static double op3sum = 0;
+static double avg(UINT64* count, double old, double size)
+{
+	double tmp = size + *count * old;
+	(*count)++;
+	tmp = tmp / *count;
+	return tmp;
+}
+#endif
+
+INT32 avc444_decompress(H264_CONTEXT* h264, BYTE op,
+                        RECTANGLE_16* regionRects, UINT32 numRegionRects,
+                        const BYTE* pSrcData, UINT32 SrcSize,
+                        RECTANGLE_16* auxRegionRects, UINT32 numAuxRegionRect,
+                        const BYTE* pAuxSrcData, UINT32 AuxSrcSize,
+                        BYTE* pDstData, DWORD DstFormat,
+                        UINT32 nDstStep, UINT32 nDstWidth, UINT32 nDstHeight,
+                        UINT32 codecId)
+{
+	INT32 status = -1;
+	avc444_frame_type chroma = (codecId == RDPGFX_CODECID_AVC444) ? AVC444_CHROMAv1 : AVC444_CHROMAv2;
+
+	if (!h264 || !regionRects ||
+	    !pSrcData || !pDstData)
+		return -1001;
+
+	switch (op)
+	{
+		case 0: /* YUV420 in stream 1
+		 * Chroma420 in stream 2 */
+			if (!avc444_process_rects(h264, pSrcData, SrcSize, pDstData, DstFormat, nDstStep, nDstWidth,
+			                          nDstHeight,
+			                          regionRects, numRegionRects, AVC444_LUMA))
+				status = -1;
+			else if (!avc444_process_rects(h264, pAuxSrcData, AuxSrcSize, pDstData, DstFormat, nDstStep,
+			                               nDstWidth, nDstHeight,
+			                               auxRegionRects, numAuxRegionRect, chroma))
+				status = -1;
+			else
+				status = 0;
+
+			break;
+
+		case 2: /* Chroma420 in stream 1 */
+			if (!avc444_process_rects(h264, pSrcData, SrcSize, pDstData, DstFormat, nDstStep, nDstWidth,
+			                          nDstHeight,
+			                          regionRects, numRegionRects, chroma))
+				status = -1;
+			else
+				status = 0;
+
+			break;
+
+		case 1: /* YUV420 in stream 1 */
+			if (!avc444_process_rects(h264, pSrcData, SrcSize, pDstData, DstFormat, nDstStep, nDstWidth,
+			                          nDstHeight,
+			                          regionRects, numRegionRects, AVC444_LUMA))
+				status = -1;
+			else
+				status = 0;
+
+			break;
+
+		default: /* WTF? */
+			break;
+	}
+
+#if defined(AVC444_FRAME_STAT)
+
+	switch (op)
+	{
+		case 0:
+			op1sum = avg(&op1, op1sum, SrcSize + AuxSrcSize);
+			break;
+
+		case 1:
+			op2sum = avg(&op2, op2sum, SrcSize);
+			break;
+
+		case 2:
+			op3sum = avg(&op3, op3sum, SrcSize);
+			break;
+
+		default:
+			break;
+	}
+
+	WLog_INFO(TAG,
+	          "luma=%"PRIu64" [avg=%lf] chroma=%"PRIu64" [avg=%lf] combined=%"PRIu64" [avg=%lf]",
+	          op1, op1sum, op2, op2sum, op3, op3sum);
+#endif
+	return status;
+}
+
+#define MAX_SUBSYSTEMS 10
+static INIT_ONCE subsystems_once = INIT_ONCE_STATIC_INIT;
+static H264_CONTEXT_SUBSYSTEM *subSystems[MAX_SUBSYSTEMS];
+
+#if defined(_WIN32) && defined(WITH_MEDIA_FOUNDATION)
+extern H264_CONTEXT_SUBSYSTEM g_Subsystem_MF;
+#endif
+
+static BOOL CALLBACK h264_register_subsystems(PINIT_ONCE once, PVOID param, PVOID *context) {
+	int i = 0;
+	ZeroMemory(subSystems, sizeof(subSystems));
+
+#if defined(_WIN32) && defined(WITH_MEDIA_FOUNDATION)
+	{
+		subSystems[i] = &g_Subsystem_MF;
+		i++;
 	}
 #endif
 
 #ifdef WITH_OPENH264
-	if (g_Subsystem_OpenH264.Init(h264))
 	{
-		h264->subsystem = &g_Subsystem_OpenH264;
-		return TRUE;
+		extern H264_CONTEXT_SUBSYSTEM g_Subsystem_OpenH264;
+		subSystems[i] = &g_Subsystem_OpenH264;
+		i++;
 	}
 #endif
+
+#ifdef WITH_FFMPEG
+	{
+		extern H264_CONTEXT_SUBSYSTEM g_Subsystem_libavcodec;
+		subSystems[i] = &g_Subsystem_libavcodec;
+		i++;
+	}
+#endif
+
+#ifdef WITH_X264
+	{
+		extern H264_CONTEXT_SUBSYSTEM g_Subsystem_x264;
+		subSystems[i] = &g_Subsystem_x264;
+		i++;
+	}
+#endif
+
+	return i > 0;
+}
+
+
+BOOL h264_context_init(H264_CONTEXT* h264)
+{
+	int i;
+
+	if (!h264)
+		return FALSE;
+
+	h264->subsystem = NULL;
+
+	InitOnceExecuteOnce(&subsystems_once, h264_register_subsystems, NULL, NULL);
+
+	for (i = 0; i < MAX_SUBSYSTEMS; i++)
+	{
+		H264_CONTEXT_SUBSYSTEM* subsystem = subSystems[i];
+		if (!subsystem || !subsystem->Init)
+			break;
+
+		if (subsystem->Init(h264))
+		{
+			h264->subsystem = subsystem;
+			return TRUE;
+		}
+	}
 
 	return FALSE;
 }
 
-int h264_context_reset(H264_CONTEXT* h264)
+BOOL h264_context_reset(H264_CONTEXT* h264, UINT32 width, UINT32 height)
 {
-	return 1;
+	if (!h264)
+		return FALSE;
+
+	h264->width = width;
+	h264->height = height;
+	return TRUE;
 }
 
 H264_CONTEXT* h264_context_new(BOOL Compressor)
 {
 	H264_CONTEXT* h264;
-
 	h264 = (H264_CONTEXT*) calloc(1, sizeof(H264_CONTEXT));
 
 	if (h264)
 	{
 		h264->Compressor = Compressor;
 
-		h264->subsystem = &g_Subsystem_dummy;
+		if (Compressor)
+		{
+			/* Default compressor settings, may be changed by caller */
+			h264->BitRate = 1000000;
+			h264->FrameRate = 30;
+		}
 
 		if (!h264_context_init(h264))
 		{
@@ -545,7 +522,9 @@ void h264_context_free(H264_CONTEXT* h264)
 	if (h264)
 	{
 		h264->subsystem->Uninit(h264);
-
+		_aligned_free(h264->pYUV444Data[0]);
+		_aligned_free(h264->pYUV444Data[1]);
+		_aligned_free(h264->pYUV444Data[2]);
 		free(h264);
 	}
 }

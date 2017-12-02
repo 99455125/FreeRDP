@@ -20,10 +20,14 @@
 
 
 
-#ifndef __LIBUSB_UDEVICE_H
-#define __LIBUSB_UDEVICE_H
+#ifndef FREERDP_CHANNEL_URBDRC_CLIENT_LIBUSB_UDEVICE_H
+#define FREERDP_CHANNEL_URBDRC_CLIENT_LIBUSB_UDEVICE_H
 
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+#include <libusb.h>
+#else
 #include <libusb-1.0/libusb.h>
+#endif
 
 #include "urbdrc_types.h"
 #include "request_queue.h"
@@ -78,4 +82,4 @@ IUDEVICE* udev_new_by_addr(int bus_number, int dev_number);
 
 extern int libusb_debug;
 
-#endif /* __LIBUSB_UDEVICE_H */
+#endif /* FREERDP_CHANNEL_URBDRC_CLIENT_LIBUSB_UDEVICE_H */

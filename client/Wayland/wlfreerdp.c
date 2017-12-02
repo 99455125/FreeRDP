@@ -3,6 +3,8 @@
  * Wayland Client
  *
  * Copyright 2014 Manuel Bachmann <tarnyko@tarnyko.net>
+ * Copyright 2016 Thincast Technologies GmbH
+ * Copyright 2016 Armin Novak <armin.novak@thincast.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,265 +21,458 @@
 
 #include <stdio.h>
 #include <errno.h>
+#include <locale.h>
 
 #include <freerdp/client/cmdline.h>
 #include <freerdp/channels/channels.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/client.h>
+#include <freerdp/utils/signal.h>
+#include <freerdp/locale/keyboard.h>
+
+#include <linux/input.h>
+
+#include <uwac/uwac.h>
 
 #include "wlfreerdp.h"
+#include "wlf_input.h"
+#include "wlf_channels.h"
 
-int wl_context_new(freerdp* instance, rdpContext* context)
+static BOOL wl_update_content(wlfContext* context_w)
 {
-	context->channels = freerdp_channels_new();
+	if (!context_w->waitingFrameDone && context_w->haveDamage)
+	{
+		UwacWindowSubmitBuffer(context_w->window, true);
+		context_w->waitingFrameDone = TRUE;
+		context_w->haveDamage = FALSE;
+	}
 
+	return TRUE;
+}
+
+static BOOL wl_begin_paint(rdpContext* context)
+{
+	rdpGdi* gdi;
+	gdi = context->gdi;
+	gdi->primary->hdc->hwnd->invalid->null = TRUE;
+	return TRUE;
+}
+
+
+static BOOL wl_end_paint(rdpContext* context)
+{
+	rdpGdi* gdi;
+	char* data;
+	wlfContext* context_w;
+	INT32 x, y;
+	UINT32 w, h;
+	int i;
+	gdi = context->gdi;
+
+	if (gdi->primary->hdc->hwnd->invalid->null)
+		return TRUE;
+
+	x = gdi->primary->hdc->hwnd->invalid->x;
+	y = gdi->primary->hdc->hwnd->invalid->y;
+	w = gdi->primary->hdc->hwnd->invalid->w;
+	h = gdi->primary->hdc->hwnd->invalid->h;
+	context_w = (wlfContext*) context;
+	data = UwacWindowGetDrawingBuffer(context_w->window);
+
+	if (!data)
+		return FALSE;
+
+	for (i = 0; i < h; i++)
+	{
+		memcpy(data + ((i + y) * (gdi->width * GetBytesPerPixel(
+		                              gdi->dstFormat))) + x * GetBytesPerPixel(gdi->dstFormat),
+		       gdi->primary_buffer + ((i + y) * (gdi->width * GetBytesPerPixel(
+		                                  gdi->dstFormat))) + x * GetBytesPerPixel(gdi->dstFormat),
+		       w * GetBytesPerPixel(gdi->dstFormat));
+	}
+
+	if (UwacWindowAddDamage(context_w->window, x, y, w, h) != UWAC_SUCCESS)
+		return FALSE;
+
+	context_w->haveDamage = TRUE;
+	return wl_update_content(context_w);
+}
+
+
+static BOOL wl_pre_connect(freerdp* instance)
+{
+	rdpSettings* settings;
+	wlfContext* context;
+	UwacOutput* output;
+	UwacSize resolution;
+
+	if (!instance)
+		return FALSE;
+
+	context = (wlfContext*) instance->context;
+	settings = instance->settings;
+
+	if (!context || !settings)
+		return FALSE;
+
+	settings->OsMajorType = OSMAJORTYPE_UNIX;
+	settings->OsMinorType = OSMINORTYPE_NATIVE_WAYLAND;
+	settings->SoftwareGdi = TRUE;
+	ZeroMemory(settings->OrderSupport, 32);
+	settings->OrderSupport[NEG_DSTBLT_INDEX] = TRUE;
+	settings->OrderSupport[NEG_PATBLT_INDEX] = TRUE;
+	settings->OrderSupport[NEG_SCRBLT_INDEX] = TRUE;
+	settings->OrderSupport[NEG_OPAQUE_RECT_INDEX] = TRUE;
+	settings->OrderSupport[NEG_DRAWNINEGRID_INDEX] = FALSE;
+	settings->OrderSupport[NEG_MULTIDSTBLT_INDEX] = FALSE;
+	settings->OrderSupport[NEG_MULTIPATBLT_INDEX] = FALSE;
+	settings->OrderSupport[NEG_MULTISCRBLT_INDEX] = FALSE;
+	settings->OrderSupport[NEG_MULTIOPAQUERECT_INDEX] = TRUE;
+	settings->OrderSupport[NEG_MULTI_DRAWNINEGRID_INDEX] = FALSE;
+	settings->OrderSupport[NEG_LINETO_INDEX] = TRUE;
+	settings->OrderSupport[NEG_POLYLINE_INDEX] = TRUE;
+	settings->OrderSupport[NEG_MEMBLT_INDEX] = settings->BitmapCacheEnabled;
+	settings->OrderSupport[NEG_MEM3BLT_INDEX] = TRUE;
+	settings->OrderSupport[NEG_MEMBLT_V2_INDEX] = settings->BitmapCacheEnabled;
+	settings->OrderSupport[NEG_MEM3BLT_V2_INDEX] = FALSE;
+	settings->OrderSupport[NEG_SAVEBITMAP_INDEX] = FALSE;
+	settings->OrderSupport[NEG_GLYPH_INDEX_INDEX] = TRUE;
+	settings->OrderSupport[NEG_FAST_INDEX_INDEX] = TRUE;
+	settings->OrderSupport[NEG_FAST_GLYPH_INDEX] = TRUE;
+	settings->OrderSupport[NEG_POLYGON_SC_INDEX] = FALSE;
+	settings->OrderSupport[NEG_POLYGON_CB_INDEX] = FALSE;
+	settings->OrderSupport[NEG_ELLIPSE_SC_INDEX] = FALSE;
+	settings->OrderSupport[NEG_ELLIPSE_CB_INDEX] = FALSE;
+	PubSub_SubscribeChannelConnected(instance->context->pubSub,
+	                                 (pChannelConnectedEventHandler) wlf_OnChannelConnectedEventHandler);
+	PubSub_SubscribeChannelDisconnected(instance->context->pubSub,
+	                                    (pChannelDisconnectedEventHandler) wlf_OnChannelDisconnectedEventHandler);
+
+	if (settings->Fullscreen)
+	{
+		// Use the resolution of the first display output
+		output = UwacDisplayGetOutput(context->display, 1);
+
+		if (output != NULL && UwacOutputGetResolution(output, &resolution) == UWAC_SUCCESS)
+		{
+			settings->DesktopWidth = (UINT32) resolution.width;
+			settings->DesktopHeight = (UINT32) resolution.height;
+		}
+		else
+		{
+			WLog_WARN(TAG, "Failed to get output resolution! Check your display settings");
+		}
+	}
+
+	if (!freerdp_client_load_addins(instance->context->channels,
+	                                instance->settings))
+		return FALSE;
+
+	return TRUE;
+}
+
+static BOOL wl_post_connect(freerdp* instance)
+{
+	rdpGdi* gdi;
+	UwacWindow* window;
+	wlfContext* context;
+
+	if (!gdi_init(instance, PIXEL_FORMAT_BGRA32))
+		return FALSE;
+
+	gdi = instance->context->gdi;
+
+	if (!gdi)
+		return FALSE;
+
+	context = (wlfContext*) instance->context;
+	context->window = window = UwacCreateWindowShm(context->display, gdi->width,
+	                           gdi->height, WL_SHM_FORMAT_XRGB8888);
+
+	if (!window)
+		return FALSE;
+
+	UwacWindowSetFullscreenState(window, NULL, instance->context->settings->Fullscreen);
+	UwacWindowSetTitle(window, "FreeRDP");
+	UwacWindowSetOpaqueRegion(context->window, 0, 0, gdi->width, gdi->height);
+	instance->update->BeginPaint = wl_begin_paint;
+	instance->update->EndPaint = wl_end_paint;
+	memcpy(UwacWindowGetDrawingBuffer(context->window), gdi->primary_buffer,
+	       gdi->width * gdi->height * 4);
+	UwacWindowAddDamage(context->window, 0, 0, gdi->width, gdi->height);
+	context->haveDamage = TRUE;
+	freerdp_keyboard_init(instance->context->settings->KeyboardLayout);
+	return wl_update_content(context);
+}
+
+static void wl_post_disconnect(freerdp* instance)
+{
+	wlfContext* context;
+
+	if (!instance)
+		return;
+
+	if (!instance->context)
+		return;
+
+	context = (wlfContext*) instance->context;
+	gdi_free(instance);
+
+	if (context->window)
+		UwacDestroyWindow(&context->window);
+}
+
+static BOOL handle_uwac_events(freerdp* instance, UwacDisplay* display)
+{
+	UwacEvent event;
+	wlfContext* context;
+
+	if (UwacDisplayDispatch(display, 1) < 0)
+		return FALSE;
+
+	while (UwacHasEvent(display))
+	{
+		if (UwacNextEvent(display, &event) != UWAC_SUCCESS)
+			return FALSE;
+
+		/*printf("UWAC event type %d\n", event.type);*/
+		switch (event.type)
+		{
+			case UWAC_EVENT_FRAME_DONE:
+				if (!instance)
+					continue;
+
+				context = (wlfContext*)instance->context;
+				context->waitingFrameDone = FALSE;
+
+				if (context->haveDamage && !wl_end_paint(instance->context))
+					return FALSE;
+
+				break;
+
+			case UWAC_EVENT_POINTER_ENTER:
+				if (!wlf_handle_pointer_enter(instance, &event.mouse_enter_leave))
+					return FALSE;
+
+				break;
+
+			case UWAC_EVENT_POINTER_MOTION:
+				if (!wlf_handle_pointer_motion(instance, &event.mouse_motion))
+					return FALSE;
+
+				break;
+
+			case UWAC_EVENT_POINTER_BUTTONS:
+				if (!wlf_handle_pointer_buttons(instance, &event.mouse_button))
+					return FALSE;
+
+				break;
+
+			case UWAC_EVENT_POINTER_AXIS:
+				if (!wlf_handle_pointer_axis(instance, &event.mouse_axis))
+					return FALSE;
+
+				break;
+
+			case UWAC_EVENT_KEY:
+				if (!wlf_handle_key(instance, &event.key))
+					return FALSE;
+
+				break;
+
+			case UWAC_EVENT_KEYBOARD_ENTER:
+				if (!wlf_keyboard_enter(instance, &event.keyboard_enter_leave))
+					return FALSE;
+
+				break;
+
+			default:
+				break;
+		}
+	}
+
+	return TRUE;
+}
+
+static int wlfreerdp_run(freerdp* instance)
+{
+	wlfContext* context;
+	DWORD count;
+	HANDLE handles[64];
+	DWORD status;
+
+	if (!instance)
+		return -1;
+
+	context = (wlfContext*)instance->context;
+
+	if (!context)
+		return -1;
+
+	if (!freerdp_connect(instance))
+	{
+		printf("Failed to connect\n");
+		return -1;
+	}
+
+	handle_uwac_events(instance, context->display);
+
+	while (!freerdp_shall_disconnect(instance))
+	{
+		handles[0] = context->displayHandle;
+		count = freerdp_get_event_handles(instance->context, &handles[1], 63);
+
+		if (!count)
+		{
+			printf("Failed to get FreeRDP file descriptor\n");
+			break;
+		}
+
+		status = WaitForMultipleObjects(count + 1, handles, FALSE, INFINITE);
+
+		if (WAIT_FAILED == status)
+		{
+			printf("%s: WaitForMultipleObjects failed\n", __FUNCTION__);
+			break;
+		}
+
+		if (!handle_uwac_events(instance, context->display))
+		{
+			printf("error handling UWAC events\n");
+			break;
+		}
+
+		//if (WaitForMultipleObjects(count, &handles[1], FALSE, INFINITE)) {
+		if (freerdp_check_event_handles(instance->context) != TRUE)
+		{
+			if (freerdp_get_last_error(instance->context) == FREERDP_ERROR_SUCCESS)
+				printf("Failed to check FreeRDP file descriptor\n");
+
+			break;
+		}
+
+		//}
+	}
+
+	freerdp_disconnect(instance);
 	return 0;
 }
 
-void wl_context_free(freerdp* instance, rdpContext* context)
+static BOOL wlf_client_global_init()
 {
+	setlocale(LC_ALL, "");
 
+	if (freerdp_handle_signals() != 0)
+		return FALSE;
+
+	return TRUE;
 }
 
-void wl_begin_paint(rdpContext* context)
+static void wlf_client_global_uninit()
 {
-	rdpGdi* gdi;
-
-	gdi = context->gdi;
-	gdi->primary->hdc->hwnd->invalid->null = 1;
 }
 
-void wl_end_paint(rdpContext* context)
+static BOOL wlf_client_new(freerdp* instance, rdpContext* context)
 {
-	char *data;
-	rdpGdi* gdi;
-	wlfDisplay* display;
-	wlfWindow* window;
-	wlfContext* context_w;
+	UwacReturnCode status;
+	wlfContext* wfl = (wlfContext*) context;
 
-	gdi = context->gdi;
-	if (gdi->primary->hdc->hwnd->invalid->null)
+	if (!instance || !context)
+		return FALSE;
+
+	instance->PreConnect = wl_pre_connect;
+	instance->PostConnect = wl_post_connect;
+	instance->PostDisconnect = wl_post_disconnect;
+	instance->Authenticate = client_cli_authenticate;
+	instance->GatewayAuthenticate = client_cli_gw_authenticate;
+	instance->VerifyCertificate = client_cli_verify_certificate;
+	instance->VerifyChangedCertificate = client_cli_verify_changed_certificate;
+	instance->LogonErrorInfo = NULL;
+	wfl->display = UwacOpenDisplay(NULL, &status);
+
+	if (!wfl->display || (status != UWAC_SUCCESS))
+		return FALSE;
+
+	wfl->displayHandle = CreateFileDescriptorEvent(NULL, FALSE, FALSE,
+	                     UwacDisplayGetFd(wfl->display), WINPR_FD_READ);
+
+	if (!wfl->displayHandle)
+		return FALSE;
+
+	return TRUE;
+}
+
+
+static void wlf_client_free(freerdp* instance, rdpContext* context)
+{
+	wlfContext* wlf = (wlfContext*) instance->context;
+
+	if (!context)
 		return;
 
-	context_w = (wlfContext*) context;
-	display = context_w->display;
-	window = context_w->window;
+	if (wlf->display)
+		UwacCloseDisplay(&wlf->display);
 
-	data = realloc(window->data, gdi->width * gdi->height * 4);
-
-	if (!data)
-	{
-		if (window->data)
-			free(window->data);
-		window->data = NULL;
-	}
-	else
-	{
-		window->data = data;
-		memcpy(window->data, (void*) gdi->primary_buffer, gdi->width * gdi->height * 4);
-	}
-
-	wlf_RefreshDisplay(display);
+	if (wlf->displayHandle)
+		CloseHandle(wlf->displayHandle);
 }
 
-BOOL wl_pre_connect(freerdp* instance)
+static int wfl_client_start(rdpContext* context)
 {
-	wlfDisplay* display;
-	wlfInput* input;
-	wlfContext* context;
-
-	freerdp_channels_pre_connect(instance->context->channels, instance);
-
-	context = (wlfContext*) instance->context;
-
-	display = wlf_CreateDisplay();
-	context->display = display;
-
-	input = wlf_CreateInput(context);
-	context->input = input;
-
-	return TRUE;
+	return 0;
 }
 
-BOOL wl_post_connect(freerdp* instance)
+static int wfl_client_stop(rdpContext* context)
 {
-	rdpGdi* gdi;
-	wlfWindow* window;
-	wlfContext* context;
-
-	gdi_init(instance, CLRCONV_ALPHA | CLRCONV_INVERT | CLRBUF_32BPP, NULL);
-	gdi = instance->context->gdi;
-
-	context = (wlfContext*) instance->context;
-	window = wlf_CreateDesktopWindow(context, "FreeRDP", gdi->width, gdi->height, FALSE);
-
-	 /* fill buffer with first image here */
-	window->data = malloc (gdi->width * gdi->height *4);
-	memcpy(window->data, (void*) gdi->primary_buffer, gdi->width * gdi->height * 4);
-	instance->update->BeginPaint = wl_begin_paint;
-	instance->update->EndPaint = wl_end_paint;
-
-	 /* put Wayland data in the context here */
-	context->window = window;
-
-	freerdp_channels_post_connect(instance->context->channels, instance);
-
-	wlf_UpdateWindowArea(context, window, 0, 0, gdi->width, gdi->height);
-
-	return TRUE;
+	return 0;
 }
 
-BOOL wl_verify_certificate(freerdp* instance, char* subject, char* issuer, char* fingerprint)
+static int RdpClientEntry(RDP_CLIENT_ENTRY_POINTS* pEntryPoints)
 {
-	char answer;
-
-	printf("Certificate details:\n");
-	printf("\tSubject: %s\n", subject);
-	printf("\tIssuer: %s\n", issuer);
-	printf("\tThumbprint: %s\n", fingerprint);
-	printf("The above X.509 certificate could not be verified, possibly because you do not have "
-		"the CA certificate in your certificate store, or the certificate has expired. "
-		"Please look at the documentation on how to create local certificate store for a private CA.\n");
-
-	while (1)
-	{
-		printf("Do you trust the above certificate? (Y/N) ");
-		answer = fgetc(stdin);
-
-		if (feof(stdin))
-		{
-			printf("\nError: Could not read answer from stdin.");
-			if (instance->settings->CredentialsFromStdin)
-				printf(" - Run without parameter \"--from-stdin\" to set trust.");
-			printf("\n");
-			return FALSE;
-		}
-
-		if (answer == 'y' || answer == 'Y')
-		{
-			return TRUE;
-		}
-		else if (answer == 'n' || answer == 'N')
-		{
-			break;
-		}
-		printf("\n");
-	}
-
-	return FALSE;
-}
-
-int wlfreerdp_run(freerdp* instance)
-{
-	int i;
-	int fds;
-	int max_fds;
-	int rcount;
-	int wcount;
-	void* rfds[32];
-	void* wfds[32];
-	fd_set rfds_set;
-	fd_set wfds_set;
-
-	ZeroMemory(rfds, sizeof(rfds));
-	ZeroMemory(wfds, sizeof(wfds));
-
-	freerdp_connect(instance);
-
-	while (1)
-	{
-		rcount = 0;
-		wcount = 0;
-		if (freerdp_get_fds(instance, rfds, &rcount, wfds, &wcount) != TRUE)
-		{
-			printf("Failed to get FreeRDP file descriptor");
-			break;
-		}
-		if (freerdp_channels_get_fds(instance->context->channels, instance, rfds, &rcount, wfds, &wcount) != TRUE)
-		{
-			printf("Failed to get FreeRDP file descriptor");
-			break;
-		}
-
-		max_fds = 0;
-		FD_ZERO(&rfds_set);
-		FD_ZERO(&wfds_set);
-
-		for (i = 0; i < rcount; i++)
-		{
-			fds = (int)(long)(rfds[i]);
-
-			if (fds > max_fds)
-				max_fds = fds;
-
-			FD_SET(fds, &rfds_set);
-		}
-
-		if (max_fds == 0)
-			break;
-
-		if (select(max_fds + 1, &rfds_set, &wfds_set, NULL, NULL) == -1)
-		{
-			if (!((errno == EAGAIN) ||
-				(errno == EWOULDBLOCK) ||
-				(errno == EINPROGRESS) ||
-				(errno == EINTR)))
-			{
-				printf("wlfreerdp_run: select failed\n");
-				break;
-			}
-		}
-
-		if (freerdp_check_fds(instance) != TRUE)
-		{
-			printf("Failed to check FreeRDP file descriptor\n");
-			break;
-		}
-		if (freerdp_channels_check_fds(instance->context->channels, instance) != TRUE)
-		{
-			printf("Failed to check channel manager file descriptor\n");
-			break;
-		}
-	}
-
-	wlfContext* context;
-
-	context = (wlfContext*) instance->context;
-	wlf_DestroyWindow(context, context->window);
-	wlf_DestroyInput(context, context->input);
-	wlf_DestroyDisplay(context, context->display);
-
-	freerdp_channels_close(instance->context->channels, instance);
-	freerdp_channels_free(instance->context->channels);
-	freerdp_free(instance);
-
+	ZeroMemory(pEntryPoints, sizeof(RDP_CLIENT_ENTRY_POINTS));
+	pEntryPoints->Version = RDP_CLIENT_INTERFACE_VERSION;
+	pEntryPoints->Size = sizeof(RDP_CLIENT_ENTRY_POINTS_V1);
+	pEntryPoints->GlobalInit = wlf_client_global_init;
+	pEntryPoints->GlobalUninit = wlf_client_global_uninit;
+	pEntryPoints->ContextSize = sizeof(wlfContext);
+	pEntryPoints->ClientNew = wlf_client_new;
+	pEntryPoints->ClientFree = wlf_client_free;
+	pEntryPoints->ClientStart = wfl_client_start;
+	pEntryPoints->ClientStop = wfl_client_stop;
 	return 0;
 }
 
 int main(int argc, char* argv[])
 {
-	int status;
-	freerdp* instance;
+	int rc = -1;
+	DWORD status;
+	RDP_CLIENT_ENTRY_POINTS clientEntryPoints;
+	rdpContext* context;
+	//if (!handle_uwac_events(NULL, g_display))
+	//	exit(1);
+	RdpClientEntry(&clientEntryPoints);
+	context = freerdp_client_context_new(&clientEntryPoints);
 
-	instance = freerdp_new();
-	instance->PreConnect = wl_pre_connect;
-	instance->PostConnect = wl_post_connect;
-	instance->VerifyCertificate = wl_verify_certificate;
+	if (!context)
+		goto fail;
 
-	instance->ContextSize = sizeof(wlfContext);
-	instance->ContextNew = wl_context_new;
-	instance->ContextFree = wl_context_free;
-	freerdp_context_new(instance);
-
-	status = freerdp_client_settings_parse_command_line_arguments(instance->settings, argc, argv);
-
-	status = freerdp_client_settings_command_line_status_print(instance->settings, status, argc, argv);
+	status = freerdp_client_settings_parse_command_line(context->settings, argc,
+	         argv, FALSE);
+	status = freerdp_client_settings_command_line_status_print(context->settings,
+	         status, argc, argv);
 
 	if (status)
-		exit(0);
+		return 0;
 
-	freerdp_client_load_addins(instance->context->channels, instance->settings);
+	if (freerdp_client_start(context) != 0)
+		goto fail;
 
-	wlfreerdp_run(instance);
+	rc = wlfreerdp_run(context->instance);
 
-	return 0;
+	if (freerdp_client_stop(context) != 0)
+		rc = -1;
+
+fail:
+	freerdp_client_context_free(context);
+	return rc;
 }

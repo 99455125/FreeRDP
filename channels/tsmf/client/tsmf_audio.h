@@ -17,8 +17,8 @@
  * limitations under the License.
  */
 
-#ifndef __TSMF_AUDIO_H
-#define __TSMF_AUDIO_H
+#ifndef FREERDP_CHANNEL_TSMF_CLIENT_AUDIO_H
+#define FREERDP_CHANNEL_TSMF_CLIENT_AUDIO_H
 
 #include "tsmf_types.h"
 
@@ -35,9 +35,9 @@ struct _ITSMFAudioDevice
 	/* Get the latency of the last written sample, in 100ns */
 	UINT64 (*GetLatency) (ITSMFAudioDevice* audio);
 	/* Change the playback volume level */
-	void (*ChangeVolume) (ITSMFAudioDevice* audio, UINT32 newVolume, UINT32 muted);
+	BOOL (*ChangeVolume) (ITSMFAudioDevice* audio, UINT32 newVolume, UINT32 muted);
 	/* Flush queued audio data */
-	void (*Flush) (ITSMFAudioDevice* audio);
+	BOOL (*Flush) (ITSMFAudioDevice* audio);
 	/* Free the audio device */
 	void (*Free) (ITSMFAudioDevice* audio);
 };
@@ -47,5 +47,4 @@ typedef ITSMFAudioDevice* (*TSMF_AUDIO_DEVICE_ENTRY) (void);
 
 ITSMFAudioDevice* tsmf_load_audio_device(const char* name, const char* device);
 
-#endif
-
+#endif /* FREERDP_CHANNEL_TSMF_CLIENT_AUDIO_H */

@@ -33,7 +33,7 @@
 
 #include "../log.h"
 
-void winpr_HexDump(const char* tag, int level, const BYTE* data, int length)
+void winpr_HexDump(const char* tag, UINT32 level, const BYTE* data, int length)
 {
 	const BYTE* p = data;
 	int i, line, offset = 0;
@@ -43,7 +43,7 @@ void winpr_HexDump(const char* tag, int level, const BYTE* data, int length)
 
 	if (!buffer)
 	{
-		WLog_ERR(tag, "malloc(%zd) failed with [%d] %s", blen, errno, strerror(errno));
+		WLog_ERR(tag, "malloc(%"PRIuz") failed with [%d] %s", blen, errno, strerror(errno));
 		return;
 	}
 
@@ -56,16 +56,15 @@ void winpr_HexDump(const char* tag, int level, const BYTE* data, int length)
 			line = WINPR_HEXDUMP_LINE_LENGTH;
 
 		for (i = 0; i < line; i++)
-			pos += trio_snprintf(&buffer[pos], blen - pos, "%02x ", p[i]);
+			pos += trio_snprintf(&buffer[pos], blen - pos, "%02"PRIx8" ", p[i]);
 
 		for (; i < WINPR_HEXDUMP_LINE_LENGTH; i++)
 			pos += trio_snprintf(&buffer[pos], blen - pos, "   ");
 
 		for (i = 0; i < line; i++)
 			pos += trio_snprintf(&buffer[pos], blen - pos, "%c",
-							(p[i] >= 0x20 && p[i] < 0x7F) ? p[i] : '.');
+							(p[i] >= 0x20 && p[i] < 0x7F) ? (char) p[i] : '.');
 
-		pos += trio_snprintf(&buffer[pos], blen - pos, "\n");
 		WLog_LVL(tag, level, "%s", buffer);
 		offset += line;
 		p += line;
@@ -75,7 +74,7 @@ void winpr_HexDump(const char* tag, int level, const BYTE* data, int length)
 	free(buffer);
 }
 
-void winpr_CArrayDump(const char* tag, int level, const BYTE* data, int length, int width)
+void winpr_CArrayDump(const char* tag, UINT32 level, const BYTE* data, int length, int width)
 {
 	const BYTE* p = data;
 	int i, line, offset = 0;
@@ -85,7 +84,7 @@ void winpr_CArrayDump(const char* tag, int level, const BYTE* data, int length, 
 
 	if (!buffer)
 	{
-		WLog_ERR(tag, "malloc(%zd) failed with [%d] %s", llen, errno, strerror(errno));
+		WLog_ERR(tag, "malloc(%"PRIuz") failed with [%d] %s", llen, errno, strerror(errno));
 		return;
 	}
 
@@ -99,7 +98,7 @@ void winpr_CArrayDump(const char* tag, int level, const BYTE* data, int length, 
 		pos = 0;
 
 		for (i = 0; i < line; i++)
-			pos += trio_snprintf(&buffer[pos], llen - pos, "\\x%02X", p[i]);
+			pos += trio_snprintf(&buffer[pos], llen - pos, "\\x%02"PRIX8"", p[i]);
 
 		WLog_LVL(tag, level, "%s", buffer);
 		offset += line;
@@ -118,6 +117,8 @@ char* winpr_BinToHexString(const BYTE* data, int length, BOOL space)
 	char bin2hex[] = "0123456789ABCDEF";
 	n = space ? 3 : 2;
 	p = (char*) malloc((length + 1) * n);
+	if (!p)
+		return NULL;
 
 	for (i = 0; i < length; i++)
 	{

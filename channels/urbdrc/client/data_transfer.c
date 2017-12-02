@@ -165,7 +165,7 @@ static int urbdrc_process_cancel_request(BYTE* data, UINT32 data_sizem, IUDEVMAN
 
 	data_read_UINT32(data + 0, CancelId); /** RequestId */
 
-	WLog_DBG(TAG, "urbdrc_process_cancel_request: id 0x%x", CancelId);
+	WLog_DBG(TAG, "urbdrc_process_cancel_request: id 0x%"PRIx32"", CancelId);
 
 	pdev = udevman->get_udevice_by_UsbDevice(udevman, UsbDevice);
 
@@ -192,7 +192,7 @@ static int urbdrc_process_retract_device_request(BYTE* data, UINT32 data_sizem, 
 			break;
 
 		default:
-			WLog_DBG(TAG, "urbdrc_process_retract_device_request: Unknown Reason %d", Reason);
+			WLog_DBG(TAG, "urbdrc_process_retract_device_request: Unknown Reason %"PRIu32"", Reason);
 			return -1;
 			break;
 	}
@@ -223,15 +223,15 @@ static int urbdrc_process_io_control(URBDRC_CHANNEL_CALLBACK* callback, BYTE* da
 	data_read_UINT32(data + 12 + InputBufferSize, RequestId);
 
 	pdev = udevman->get_udevice_by_UsbDevice(udevman, UsbDevice);
-
 	if (pdev == NULL)
 		return 0;
 
 	InterfaceId = ((STREAM_ID_PROXY<<30) | pdev->get_ReqCompletion(pdev));
 
 	/**  process */
-	OutputBuffer = (BYTE *)malloc(OutputBufferSize);
-	memset(OutputBuffer, 0, OutputBufferSize);
+	OutputBuffer = (BYTE *)calloc(1, OutputBufferSize);
+	if (!OutputBuffer)
+		return ERROR_OUTOFMEMORY;
 
 	switch (IoControlCode)
 	{
@@ -261,7 +261,7 @@ static int urbdrc_process_io_control(URBDRC_CHANNEL_CALLBACK* callback, BYTE* da
 					OutputBufferSize = 4;
 				}
 
-				WLog_DBG(TAG, "PORT STATUS(fake!):0x%02x%02x%02x%02x",
+				WLog_DBG(TAG, "PORT STATUS(fake!):0x%02"PRIx8"%02"PRIx8"%02"PRIx8"%02"PRIx8"",
 					OutputBuffer[3], OutputBuffer[2], OutputBuffer[1], OutputBuffer[0]);
 			}
 
@@ -278,16 +278,20 @@ static int urbdrc_process_io_control(URBDRC_CHANNEL_CALLBACK* callback, BYTE* da
 			break;
 
 		default:
-			WLog_DBG(TAG, "urbdrc_process_io_control: unknown IoControlCode 0x%X", IoControlCode);
+			WLog_DBG(TAG, "urbdrc_process_io_control: unknown IoControlCode 0x%"PRIX32"", IoControlCode);
 			zfree(OutputBuffer);
-			return -1;
+			return ERROR_INVALID_OPERATION;
 			break;
 	}
 
 	offset = 28;
 	out_size = offset + OutputBufferSize;
-	out_data = (BYTE *) malloc(out_size);
-	memset(out_data, 0, out_size);
+	out_data = (BYTE *) calloc(1, out_size);
+	if (!out_data)
+	{
+		zfree(OutputBuffer);
+		return ERROR_OUTOFMEMORY;
+	}
 	data_write_UINT32(out_data + 0, InterfaceId); /** interface */
 	data_write_UINT32(out_data + 4, MessageId); /** message id */
 	data_write_UINT32(out_data + 8, IOCONTROL_COMPLETION); /** function id */
@@ -296,7 +300,7 @@ static int urbdrc_process_io_control(URBDRC_CHANNEL_CALLBACK* callback, BYTE* da
 	data_write_UINT32(out_data + 20, OutputBufferSize); /** Information */
 	data_write_UINT32(out_data + 24, OutputBufferSize); /** OutputBufferSize */
 
-	for (i=0;i<OutputBufferSize;i++)
+	for (i = 0; i < OutputBufferSize; i++)
 	{
 		data_write_BYTE(out_data + offset, OutputBuffer[i]); /** OutputBuffer */
 		offset += 1;
@@ -308,7 +312,7 @@ static int urbdrc_process_io_control(URBDRC_CHANNEL_CALLBACK* callback, BYTE* da
 	zfree(out_data);
 	zfree(OutputBuffer);
 
-	return 0;
+	return CHANNEL_RC_OK;
 }
 
 static int urbdrc_process_internal_io_control(URBDRC_CHANNEL_CALLBACK* callback, BYTE* data,
@@ -321,7 +325,7 @@ static int urbdrc_process_internal_io_control(URBDRC_CHANNEL_CALLBACK* callback,
 
 	data_read_UINT32(data + 0, IoControlCode);
 
-	WLog_DBG(TAG, "urbdrc_process_internal_io_control:0x%x", IoControlCode);
+	WLog_DBG(TAG, "urbdrc_process_internal_io_control:0x%"PRIx32"", IoControlCode);
 
 	data_read_UINT32(data + 4, InputBufferSize);
 	data_read_UINT32(data + 8, OutputBufferSize);
@@ -866,12 +870,14 @@ static int urb_isoch_transfer(URBDRC_CHANNEL_CALLBACK * callback, BYTE * data,
 			break;
 	}
 
-	WLog_DBG(TAG, "urb_isoch_transfer: EndpointAddress: 0x%x, "
-		"TransferFlags: 0x%x, " "StartFrame: 0x%x, "
-		"NumberOfPackets: 0x%x, " "OutputBufferSize: 0x%x "
-		"RequestId: 0x%x",
-		EndpointAddress, TransferFlags, StartFrame,
-		NumberOfPackets, OutputBufferSize, RequestId);
+	WLog_DBG(TAG, "urb_isoch_transfer: EndpointAddress: 0x%"PRIx32", "
+	        "TransferFlags: 0x%"PRIx32", "
+	        "StartFrame: 0x%"PRIx32", "
+	        "NumberOfPackets: 0x%"PRIx32", "
+	        "OutputBufferSize: 0x%"PRIx32" "
+	        "RequestId: 0x%"PRIx32"",
+	        EndpointAddress, TransferFlags, StartFrame,
+	        NumberOfPackets, OutputBufferSize, RequestId);
 
 #if ISOCH_FIFO
 	ISOCH_CALLBACK_QUEUE * isoch_queue = NULL;
@@ -1199,10 +1205,10 @@ static int urb_control_vendor_or_class_request(URBDRC_CHANNEL_CALLBACK * callbac
 		bmRequestType |= 0x80;
 
 	WLog_DBG(TAG, "urb_control_vendor_or_class_request: "
-		"RequestId 0x%x TransferFlags: 0x%x ReqTypeReservedBits: 0x%x "
-		"Request:0x%x Value: 0x%x Index: 0x%x OutputBufferSize: 0x%x bmRequestType: 0x%x!!",
-		RequestId, TransferFlags, ReqTypeReservedBits, Request, Value,
-		Index, OutputBufferSize, bmRequestType);
+	        "RequestId 0x%"PRIx32" TransferFlags: 0x%"PRIx32" ReqTypeReservedBits: 0x%"PRIx8" "
+	        "Request:0x%"PRIx8" Value: 0x%"PRIx16" Index: 0x%"PRIx16" OutputBufferSize: 0x%"PRIx32" bmRequestType: 0x%"PRIx8"!!",
+	        RequestId, TransferFlags, ReqTypeReservedBits, Request, Value,
+	        Index, OutputBufferSize, bmRequestType);
 
 	ret = pdev->control_transfer(
 		pdev, RequestId, 0, 0, bmRequestType,
@@ -1281,7 +1287,7 @@ static int urb_os_feature_descriptor_request(URBDRC_CHANNEL_CALLBACK * callback,
 
 	data_read_UINT32(data + 0, RequestId);
 	data_read_BYTE(data + 4, Recipient); /** Recipient */
-	Recipient = Recipient && 0x1f;
+	Recipient = (Recipient & 0x1f); /* XXX: origin: Recipient && 0x1f !? */
 	data_read_BYTE(data + 5, InterfaceNumber); /** InterfaceNumber */
 	data_read_BYTE(data + 6, Ms_PageIndex); /** Ms_PageIndex */
 	data_read_UINT16(data + 7, Ms_featureDescIndex); /** Ms_featureDescIndex */
@@ -1304,11 +1310,12 @@ static int urb_os_feature_descriptor_request(URBDRC_CHANNEL_CALLBACK * callback,
 			break;
 	}
 
-	WLog_DBG(TAG, "Ms descriptor arg: Recipient:0x%x, "
-		"InterfaceNumber:0x%x, Ms_PageIndex:0x%x, "
-		"Ms_featureDescIndex:0x%x, OutputBufferSize:0x%x",
-		Recipient, InterfaceNumber, Ms_PageIndex,
-		Ms_featureDescIndex, OutputBufferSize);
+	WLog_DBG(TAG, "Ms descriptor arg: Recipient:0x%"PRIx8", "
+	        "InterfaceNumber:0x%"PRIx8", Ms_PageIndex:0x%"PRIx8", "
+	        "Ms_featureDescIndex:0x%"PRIx16", OutputBufferSize:0x%"PRIx32"",
+	        Recipient, InterfaceNumber, Ms_PageIndex,
+	        Ms_featureDescIndex, OutputBufferSize);
+
 	/** get ms string */
 	ret = pdev->os_feature_descriptor_request(
 		pdev, RequestId, Recipient,
@@ -1386,7 +1393,7 @@ static int urb_pipe_request(URBDRC_CHANNEL_CALLBACK * callback, BYTE * data,
 
 	switch (action){
 		case PIPE_CANCEL:
-			WLog_DBG(TAG, "urb_pipe_request: PIPE_CANCEL 0x%x ", EndpointAddress);
+			WLog_DBG(TAG, "urb_pipe_request: PIPE_CANCEL 0x%"PRIx32"", EndpointAddress);
 
 			ret = pdev->control_pipe_request(
 				pdev, RequestId, EndpointAddress,
@@ -1400,7 +1407,7 @@ static int urb_pipe_request(URBDRC_CHANNEL_CALLBACK * callback, BYTE * data,
 
 			break;
 		case PIPE_RESET:
-			WLog_DBG(TAG, "urb_pipe_request: PIPE_RESET ep 0x%x ", EndpointAddress);
+			WLog_DBG(TAG, "urb_pipe_request: PIPE_RESET ep 0x%"PRIx32"", EndpointAddress);
 
 			ret = pdev->control_pipe_request(
 				pdev, RequestId, EndpointAddress,
@@ -1718,7 +1725,7 @@ static int urb_control_feature_request(URBDRC_CHANNEL_CALLBACK * callback, BYTE 
 			bmRequest = 0x01; /* REQUEST_CLEAR_FEATURE */
 			break;
 		default:
-			WLog_ERR(TAG,  "urb_control_feature_request: Error Command %x", command);
+			WLog_ERR(TAG,  "urb_control_feature_request: Error Command 0x%02"PRIx8"", command);
 			zfree(out_data);
 			return -1;
 	}
@@ -2290,7 +2297,7 @@ static int urbdrc_process_transfer_request(URBDRC_CHANNEL_CALLBACK * callback, B
 				URB_CONTROL_TRANSFER_EXTERNAL);
 			break;
 		default:
-			WLog_DBG(TAG, "URB_Func: %x is not found!", URB_Function);
+			WLog_DBG(TAG, "URB_Func: %"PRIx16" is not found!", URB_Function);
 			break;
 	}
 
@@ -2312,12 +2319,9 @@ void* urbdrc_process_udev_data_transfer(void* arg)
 	pdev = udevman->get_udevice_by_UsbDevice(udevman, UsbDevice);
 	if (pdev == NULL || pdev->isSigToEnd(pdev))
 	{
-		if (transfer_data)
-		{
-			if (transfer_data->pBuffer)
-				zfree(transfer_data->pBuffer);
-			zfree(transfer_data);
-		}
+		if (transfer_data->pBuffer)
+			zfree(transfer_data->pBuffer);
+		zfree(transfer_data);
 		return 0;
 	}
 
@@ -2332,7 +2336,7 @@ void* urbdrc_process_udev_data_transfer(void* arg)
 	{
 		case CANCEL_REQUEST:
 			WLog_DBG(TAG, "urbdrc_process_udev_data_transfer:"
-				" >>CANCEL_REQUEST<<0x%X", FunctionId);
+					" >>CANCEL_REQUEST<<0x%"PRIX32"", FunctionId);
 			error = urbdrc_process_cancel_request(
 				pBuffer + 8,
 				cbSize - 8,
@@ -2341,7 +2345,7 @@ void* urbdrc_process_udev_data_transfer(void* arg)
 			break;
 		case REGISTER_REQUEST_CALLBACK:
 			WLog_DBG(TAG, "urbdrc_process_udev_data_transfer:"
-				" >>REGISTER_REQUEST_CALLBACK<<0x%X", FunctionId);
+					" >>REGISTER_REQUEST_CALLBACK<<0x%"PRIX32"", FunctionId);
 			error = urbdrc_process_register_request_callback(
 				callback,
 				pBuffer + 8, 
@@ -2351,7 +2355,7 @@ void* urbdrc_process_udev_data_transfer(void* arg)
 			break;
 		case IO_CONTROL:
 			WLog_DBG(TAG, "urbdrc_process_udev_data_transfer:"
-				" >>IO_CONTROL<<0x%X", FunctionId);
+					" >>IO_CONTROL<<0x%"PRIX32"", FunctionId);
 			error = urbdrc_process_io_control(
 				callback,
 				pBuffer + 8,
@@ -2361,7 +2365,7 @@ void* urbdrc_process_udev_data_transfer(void* arg)
 			break;
 		case INTERNAL_IO_CONTROL:
 			WLog_DBG(TAG, "urbdrc_process_udev_data_transfer:"
-				" >>INTERNAL_IO_CONTROL<<0x%X", FunctionId);
+					" >>INTERNAL_IO_CONTROL<<0x%"PRIX32"", FunctionId);
 			error = urbdrc_process_internal_io_control(
 				callback,
 				pBuffer + 8,
@@ -2371,7 +2375,7 @@ void* urbdrc_process_udev_data_transfer(void* arg)
 			break;
 		case QUERY_DEVICE_TEXT:
 			WLog_DBG(TAG, "urbdrc_process_udev_data_transfer:"
-				" >>QUERY_DEVICE_TEXT<<0x%X", FunctionId);
+					" >>QUERY_DEVICE_TEXT<<0x%"PRIX32"", FunctionId);
 			error = urbdrc_process_query_device_text(
 				callback,
 				pBuffer + 8,
@@ -2382,7 +2386,7 @@ void* urbdrc_process_udev_data_transfer(void* arg)
 			break;
 		case TRANSFER_IN_REQUEST:
 			WLog_DBG(TAG, "urbdrc_process_udev_data_transfer:"
-				" >>TRANSFER_IN_REQUEST<<0x%X", FunctionId);
+					" >>TRANSFER_IN_REQUEST<<0x%"PRIX32"", FunctionId);
 			error = urbdrc_process_transfer_request(
 				callback,
 				pBuffer + 8,
@@ -2394,7 +2398,7 @@ void* urbdrc_process_udev_data_transfer(void* arg)
 			break;
 		case TRANSFER_OUT_REQUEST:
 			WLog_DBG(TAG, "urbdrc_process_udev_data_transfer:"
-				" >>TRANSFER_OUT_REQUEST<<0x%X", FunctionId);
+					" >>TRANSFER_OUT_REQUEST<<0x%"PRIX32"", FunctionId);
 			error = urbdrc_process_transfer_request(
 				callback,
 				pBuffer + 8,
@@ -2406,7 +2410,7 @@ void* urbdrc_process_udev_data_transfer(void* arg)
 			break;
 		case RETRACT_DEVICE:
 			WLog_DBG(TAG, "urbdrc_process_udev_data_transfer:"
-				" >>RETRACT_DEVICE<<0x%X", FunctionId);
+					" >>RETRACT_DEVICE<<0x%"PRIX32"", FunctionId);
 			error = urbdrc_process_retract_device_request(
 				pBuffer + 8,
 				cbSize - 8, 
@@ -2415,7 +2419,7 @@ void* urbdrc_process_udev_data_transfer(void* arg)
 			break;
 		default:
 			WLog_DBG(TAG, "urbdrc_process_udev_data_transfer:"
-				" unknown FunctionId 0x%X", FunctionId);
+					" unknown FunctionId 0x%"PRIX32"", FunctionId);
 			error = -1;
 			break;
 	}

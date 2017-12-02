@@ -18,8 +18,8 @@
  * limitations under the License.
  */
 
-#ifndef __TSMF_CONSTANTS_H
-#define __TSMF_CONSTANTS_H
+#ifndef FREERDP_CHANNEL_TSMF_CLIENT_CONSTANTS_H
+#define FREERDP_CHANNEL_TSMF_CLIENT_CONSTANTS_H
 
 #define GUID_SIZE 16
 #define TSMF_BUFFER_PADDING_SIZE 8
@@ -125,6 +125,8 @@
 #define TSMF_SUB_TYPE_VP8                  24
 #define TSMF_SUB_TYPE_VP9                  25
 #define TSMF_SUB_TYPE_H263                 26
+#define TSMF_SUB_TYPE_M4S2                 27
+#define TSMF_SUB_TYPE_WMA1                 28
 
 /* FormatType */
 #define TSMF_FORMAT_TYPE_UNKNOWN            0
@@ -134,5 +136,4 @@
 #define TSMF_FORMAT_TYPE_VIDEOINFO2         4
 #define TSMF_FORMAT_TYPE_MPEG1VIDEOINFO     5
 
-#endif
-
+#endif /* FREERDP_CHANNEL_TSMF_CLIENT_CONSTANTS_H */

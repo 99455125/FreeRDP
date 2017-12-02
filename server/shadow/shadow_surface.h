@@ -16,28 +16,13 @@
  * limitations under the License.
  */
 
-#ifndef FREERDP_SHADOW_SERVER_SURFACE_H
-#define FREERDP_SHADOW_SERVER_SURFACE_H
+#ifndef FREERDP_SERVER_SHADOW_SURFACE_H
+#define FREERDP_SERVER_SHADOW_SURFACE_H
 
 #include <freerdp/server/shadow.h>
 
 #include <winpr/crt.h>
 #include <winpr/synch.h>
-
-struct rdp_shadow_surface
-{
-	rdpShadowServer* server;
-
-	int x;
-	int y;
-	int width;
-	int height;
-	int scanline;
-	BYTE* data;
-
-	CRITICAL_SECTION lock;
-	REGION16 invalidRegion;
-};
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,9 +30,10 @@ extern "C" {
 
 rdpShadowSurface* shadow_surface_new(rdpShadowServer* server, int x, int y, int width, int height);
 void shadow_surface_free(rdpShadowSurface* surface);
+BOOL shadow_surface_resize(rdpShadowSurface *surface, int x, int y, int width, int height);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* FREERDP_SHADOW_SERVER_SURFACE_H */
+#endif /* FREERDP_SERVER_SHADOW_SURFACE_H */

@@ -167,6 +167,8 @@ void mf_event_region_free(mfEventRegion* event_region)
 mfEvent* mf_event_new(int type)
 {
 	mfEvent* event = malloc(sizeof(mfEvent));
+	if (!event)
+		return NULL;
 	event->type = type;
 	return event;
 }
@@ -190,7 +192,10 @@ mfEventQueue* mf_event_queue_new()
 		event_queue->events = (mfEvent**) malloc(sizeof(mfEvent*) * event_queue->size);
 		
 		if (pipe(event_queue->pipe_fd) < 0)
+		{
+			free(event_queue);
 			return NULL;
+		}
 		
 		pthread_mutex_init(&(event_queue->mutex), NULL);
 	}

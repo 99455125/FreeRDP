@@ -21,15 +21,18 @@ set(${MODULE_PREFIX}_SRCS
 	rdpsnd_main.c
 	rdpsnd_main.h)
 
-add_channel_client_library(${MODULE_PREFIX} ${MODULE_NAME} ${CHANNEL_NAME} FALSE "VirtualChannelEntry")
+add_channel_client_library(${MODULE_PREFIX} ${MODULE_NAME} ${CHANNEL_NAME} FALSE "VirtualChannelEntryEx")
 
 
 
-target_link_libraries(${MODULE_NAME} winpr freerdp)
+target_link_libraries(${MODULE_NAME} winpr freerdp ${CMAKE_THREAD_LIBS_INIT})
 
-install(TARGETS ${MODULE_NAME} DESTINATION ${FREERDP_ADDIN_PATH} EXPORT FreeRDPTargets)
 
 set_property(TARGET ${MODULE_NAME} PROPERTY FOLDER "Channels/${CHANNEL_NAME}/Client")
+
+if(WITH_OSS)
+	add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "oss" "")
+endif()
 
 if(WITH_ALSA)
 	add_channel_client_subsystem(${MODULE_PREFIX} ${CHANNEL_NAME} "alsa" "")

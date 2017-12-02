@@ -108,7 +108,7 @@ int xf_tsmf_xv_video_frame_event(TsmfClientContext* tsmf, TSMF_VIDEO_FRAME_EVENT
 		return -1001;
 
 	/* In case the player is minimized */
-	if (event->x < -2048 || event->y < -2048 || event->numVisibleRects < 0)
+	if (event->x < -2048 || event->y < -2048 || event->numVisibleRects == 0)
 	{
 		return -1002;
 	}
@@ -186,7 +186,8 @@ int xf_tsmf_xv_video_frame_event(TsmfClientContext* tsmf, TSMF_VIDEO_FRAME_EVENT
 	}
 	else
 	{
-		WLog_DBG(TAG, "pixel format 0x%X not supported by hardware.", pixfmt);
+		WLog_DBG(TAG, "pixel format 0x%"PRIX32" not supported by hardware.", pixfmt);
+		free(xrects);
 		return -1003;
 	}
 
@@ -213,6 +214,7 @@ int xf_tsmf_xv_video_frame_event(TsmfClientContext* tsmf, TSMF_VIDEO_FRAME_EVENT
 	if (!XShmAttach(xfc->display, &shminfo))
 	{
 		XFree(image);
+		free(xrects);
 		WLog_DBG(TAG, "XShmAttach failed.");
 		return -1004;
 	}
@@ -357,7 +359,7 @@ int xf_tsmf_xv_init(xfContext* xfc, TsmfClientContext* tsmf)
 
 	for (i = 0; i < num_adaptors; i++)
 	{
-		WLog_DBG(TAG, "adapter port %ld-%ld (%s)", ai[i].base_id,
+		WLog_DBG(TAG, "adapter port %lu-%lu (%s)", ai[i].base_id,
 			ai[i].base_id + ai[i].num_ports - 1, ai[i].name);
 
 		if (xv->xv_port == 0 && i == num_adaptors - 1)

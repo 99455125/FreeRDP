@@ -22,7 +22,6 @@ set(${MODULE_PREFIX}_SRCS
 	keyboard_layout.c
 	keyboard.c
 	locale.c
-	timezone.c
 	liblocale.h)
 
 set(${MODULE_PREFIX}_X11_SRCS
@@ -68,6 +67,10 @@ if(WITH_X11)
 	else()
 		set(${MODULE_PREFIX}_SRCS ${${MODULE_PREFIX}_SRCS} ${${MODULE_PREFIX}_X11_KEYMAP_SRCS})
 	endif()
+endif()
+
+if(WITH_WAYLAND)
+	freerdp_definition_add(-DWITH_WAYLAND)
 endif()
 
 freerdp_module_add(${${MODULE_PREFIX}_SRCS})

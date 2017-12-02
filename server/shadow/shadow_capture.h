@@ -16,8 +16,8 @@
  * limitations under the License.
  */
 
-#ifndef FREERDP_SHADOW_SERVER_CAPTURE_H
-#define FREERDP_SHADOW_SERVER_CAPTURE_H
+#ifndef FREERDP_SERVER_SHADOW_CAPTURE_H
+#define FREERDP_SERVER_SHADOW_CAPTURE_H
 
 #include <freerdp/server/shadow.h>
 
@@ -38,9 +38,6 @@ struct rdp_shadow_capture
 extern "C" {
 #endif
 
-int shadow_capture_align_clip_rect(RECTANGLE_16* rect, RECTANGLE_16* clip);
-int shadow_capture_compare(BYTE* pData1, int nStep1, int nWidth, int nHeight, BYTE* pData2, int nStep2, RECTANGLE_16* rect);
-
 rdpShadowCapture* shadow_capture_new(rdpShadowServer* server);
 void shadow_capture_free(rdpShadowCapture* capture);
 
@@ -48,4 +45,4 @@ void shadow_capture_free(rdpShadowCapture* capture);
 }
 #endif
 
-#endif /* FREERDP_SHADOW_SERVER_CAPTURE_H */
+#endif /* FREERDP_SERVER_SHADOW_CAPTURE_H */

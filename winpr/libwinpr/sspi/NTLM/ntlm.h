@@ -24,16 +24,8 @@
 #include <winpr/windows.h>
 
 #include <winpr/nt.h>
-
-#include <time.h>
-#include <openssl/des.h>
-#include <openssl/md4.h>
-#include <openssl/md5.h>
-#include <openssl/sha.h>
-#include <openssl/rc4.h>
-#include <openssl/hmac.h>
-#include <openssl/rand.h>
-#include <openssl/engine.h>
+#include <winpr/crypto.h>
+#include <winpr/ntlm.h>
 
 #include "../sspi.h"
 
@@ -229,13 +221,14 @@ struct _NTLM_CONTEXT
 	NTLM_STATE state;
 	int SendSeqNum;
 	int RecvSeqNum;
+	char* SamFile;
 	BYTE NtlmHash[16];
 	BYTE NtlmV2Hash[16];
 	BYTE MachineID[32];
 	BOOL SendVersionInfo;
 	BOOL confidentiality;
-	RC4_KEY SendRc4Seal;
-	RC4_KEY RecvRc4Seal;
+	WINPR_RC4_CTX* SendRc4Seal;
+	WINPR_RC4_CTX* RecvRc4Seal;
 	BYTE* SendSigningKey;
 	BYTE* RecvSigningKey;
 	BYTE* SendSealingKey;
@@ -281,11 +274,15 @@ struct _NTLM_CONTEXT
 	BYTE ServerSealingKey[16];
 	BYTE MessageIntegrityCheck[16];
 	UINT32 MessageIntegrityCheckOffset;
+	psPeerComputeNtlmHash HashCallback;
+	void *HashCallbackArg;
 };
 typedef struct _NTLM_CONTEXT NTLM_CONTEXT;
 
 NTLM_CONTEXT* ntlm_ContextNew(void);
 void ntlm_ContextFree(NTLM_CONTEXT* context);
+SECURITY_STATUS ntlm_computeProofValue(NTLM_CONTEXT *ntlm, SecBuffer *ntproof);
+SECURITY_STATUS ntlm_computeMicValue(NTLM_CONTEXT *ntlm, SecBuffer *micvalue);
 
 #ifdef WITH_DEBUG_NLA
 #define WITH_DEBUG_NTLM

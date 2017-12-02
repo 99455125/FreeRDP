@@ -3,6 +3,8 @@
  * X11 GDI
  *
  * Copyright 2011 Marc-Andre Moreau <marcandre.moreau@gmail.com>
+ * Copyright 2016 Thincast Technologies GmbH
+ * Copyright 2016 Armin Novak <armin.novak@thincast.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,8 +19,8 @@
  * limitations under the License.
  */
 
-#ifndef __XF_GDI_H
-#define __XF_GDI_H
+#ifndef FREERDP_CLIENT_X11_GDI_H
+#define FREERDP_CLIENT_X11_GDI_H
 
 #include <freerdp/gdi/gdi.h>
 
@@ -26,6 +28,5 @@
 #include "xfreerdp.h"
 
 void xf_gdi_register_update_callbacks(rdpUpdate* update);
-void xf_gdi_bitmap_update(rdpContext* context, BITMAP_UPDATE* bitmapUpdate);
 
-#endif /* __XF_GDI_H */
+#endif /* FREERDP_CLIENT_X11_GDI_H */

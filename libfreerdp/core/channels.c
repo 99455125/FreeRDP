@@ -3,6 +3,7 @@
  * Virtual Channels
  *
  * Copyright 2011 Vic Lee
+ * Copyright 2015 Copyright 2015 Thincast Technologies GmbH
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -69,7 +70,7 @@ BOOL freerdp_channel_send(rdpRdp* rdp, UINT16 channelId, BYTE* data, int size)
 
 	if (!channel)
 	{
-		WLog_ERR(TAG,  "freerdp_channel_send: unknown channelId %d", channelId);
+		WLog_ERR(TAG,  "freerdp_channel_send: unknown channelId %"PRIu16"", channelId);
 		return FALSE;
 	}
 
@@ -79,6 +80,9 @@ BOOL freerdp_channel_send(rdpRdp* rdp, UINT16 channelId, BYTE* data, int size)
 	while (left > 0)
 	{
 		s = rdp_send_stream_init(rdp);
+
+		if (!s)
+			return FALSE;
 
 		if (left > (int) rdp->settings->VirtualChannelChunkSize)
 		{
@@ -97,10 +101,21 @@ BOOL freerdp_channel_send(rdpRdp* rdp, UINT16 channelId, BYTE* data, int size)
 
 		Stream_Write_UINT32(s, size);
 		Stream_Write_UINT32(s, flags);
-		Stream_EnsureCapacity(s, chunkSize);
+
+		if (!Stream_EnsureCapacity(s, chunkSize))
+		{
+			Stream_Release(s);
+			return FALSE;
+		}
+
 		Stream_Write(s, data, chunkSize);
 
-		rdp_send(rdp, s, channelId);
+		WLog_DBG(TAG, "%s: sending data (flags=0x%x size=%d)", __FUNCTION__, flags, size);
+		if (!rdp_send(rdp, s, channelId))
+		{
+			Stream_Release(s);
+			return FALSE;
+		}
 
 		data += chunkSize;
 		left -= chunkSize;
@@ -122,14 +137,13 @@ BOOL freerdp_channel_process(freerdp* instance, wStream* s, UINT16 channelId)
 	Stream_Read_UINT32(s, length);
 	Stream_Read_UINT32(s, flags);
 	chunkLength = Stream_GetRemainingLength(s);
-
 	IFCALL(instance->ReceiveChannelData, instance,
-			channelId, Stream_Pointer(s), chunkLength, flags, length);
-
+	       channelId, Stream_Pointer(s), chunkLength, flags, length);
 	return TRUE;
 }
 
-BOOL freerdp_channel_peer_process(freerdp_peer* client, wStream* s, UINT16 channelId)
+BOOL freerdp_channel_peer_process(freerdp_peer* client, wStream* s,
+                                  UINT16 channelId)
 {
 	UINT32 length;
 	UINT32 flags;
@@ -166,17 +180,19 @@ BOOL freerdp_channel_peer_process(freerdp_peer* client, wStream* s, UINT16 chann
 		if (!found)
 			return FALSE;
 
-		client->VirtualChannelRead(client, hChannel, Stream_Pointer(s), Stream_GetRemainingLength(s));
+		client->VirtualChannelRead(client, hChannel, Stream_Pointer(s),
+		                           Stream_GetRemainingLength(s));
 	}
 	else if (client->ReceiveChannelData)
 	{
-		client->ReceiveChannelData(client, channelId, Stream_Pointer(s), chunkLength, flags, length);
+		client->ReceiveChannelData(client, channelId, Stream_Pointer(s), chunkLength,
+		                           flags, length);
 	}
 
 	return TRUE;
 }
 
-static WtsApiFunctionTable FreeRDP_WtsApiFunctionTable =
+static const WtsApiFunctionTable FreeRDP_WtsApiFunctionTable =
 {
 	0, /* dwVersion */
 	0, /* dwFlags */
@@ -243,10 +259,14 @@ static WtsApiFunctionTable FreeRDP_WtsApiFunctionTable =
 	FreeRDP_WTSEnableChildSessions, /* EnableChildSessions */
 	FreeRDP_WTSIsChildSessionsEnabled, /* IsChildSessionsEnabled */
 	FreeRDP_WTSGetChildSessionId, /* GetChildSessionId */
-	FreeRDP_WTSGetActiveConsoleSessionId /* GetActiveConsoleSessionId */
+	FreeRDP_WTSGetActiveConsoleSessionId, /* GetActiveConsoleSessionId */
+	FreeRDP_WTSLogonUser,
+	FreeRDP_WTSLogoffUser,
+	FreeRDP_WTSStartRemoteControlSessionExW,
+	FreeRDP_WTSStartRemoteControlSessionExA
 };
 
 PWtsApiFunctionTable FreeRDP_InitWtsApi(void)
 {
-	return &FreeRDP_WtsApiFunctionTable;
+	return (PWtsApiFunctionTable)&FreeRDP_WtsApiFunctionTable;
 }

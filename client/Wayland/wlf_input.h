@@ -3,6 +3,7 @@
  * Wayland Input
  *
  * Copyright 2014 Manuel Bachmann <tarnyko@tarnyko.net>
+ * Copyright 2015 David Fort <contact@hardening-consulting.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,24 +18,21 @@
  * limitations under the License.
  */
 
-#ifndef __WLF_INPUT_H
-#define __WLF_INPUT_H
+#ifndef FREERDP_CLIENT_WAYLAND_INPUT_H
+#define FREERDP_CLIENT_WAYLAND_INPUT_H
 
-#include <wayland-client.h>
+#include <freerdp/freerdp.h>
+#include <freerdp/gdi/gdi.h>
+#include <freerdp/gdi/gfx.h>
+#include <uwac/uwac.h>
 
-typedef struct wlf_input wlfInput;
+BOOL wlf_handle_pointer_enter(freerdp* instance,
+                              UwacPointerEnterLeaveEvent* ev);
+BOOL wlf_handle_pointer_motion(freerdp* instance, UwacPointerMotionEvent* ev);
+BOOL wlf_handle_pointer_buttons(freerdp* instance, UwacPointerButtonEvent* ev);
+BOOL wlf_handle_pointer_axis(freerdp* instance, UwacPointerAxisEvent* ev);
 
-#include "wlfreerdp.h"
+BOOL wlf_handle_key(freerdp* instance, UwacKeyEvent* ev);
+BOOL wlf_keyboard_enter(freerdp* instance, UwacKeyboardEnterLeaveEvent* ev);
 
-struct wlf_input
-{
-	rdpInput *input;
-
-	struct wl_pointer *pointer;
-	struct wl_keyboard *keyboard;
-};
-
-wlfInput* wlf_CreateInput(wlfContext* wlfc);
-void wlf_DestroyInput(wlfContext* wlfc, wlfInput* input);
-
-#endif /* __WLF_INPUT_H */
+#endif /* FREERDP_CLIENT_WAYLAND_INPUT_H */

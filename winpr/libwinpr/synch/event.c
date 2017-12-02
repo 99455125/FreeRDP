@@ -3,6 +3,8 @@
  * Synchronization Functions
  *
  * Copyright 2012 Marc-Andre Moreau <marcandre.moreau@gmail.com>
+ * Copyright 2017 Armin Novak <armin.novak@thincast.com>
+ * Copyright 2017 Thincast Technologies GmbH
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,8 +39,9 @@
 
 #ifdef HAVE_EVENTFD_H
 #include <sys/eventfd.h>
-#include <errno.h>
 #endif
+
+#include <errno.h>
 
 #include "../handle/handle.h"
 #include "../pipe/pipe.h"
@@ -46,68 +49,119 @@
 #include "../log.h"
 #define TAG WINPR_TAG("synch.event")
 
-CRITICAL_SECTION cs = { NULL, 0, 0, NULL, NULL, 0 };
+static BOOL EventCloseHandle(HANDLE handle);
 
-HANDLE CreateEventW(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState, LPCWSTR lpName)
+static BOOL EventIsHandled(HANDLE handle)
 {
-	WINPR_EVENT* event;
-	event = (WINPR_EVENT*) calloc(1, sizeof(WINPR_EVENT));
+	WINPR_TIMER* pEvent = (WINPR_TIMER*) handle;
 
-	if (event)
+	if (!pEvent || (pEvent->Type != HANDLE_TYPE_EVENT))
 	{
-		event->bAttached = FALSE;
-		event->bManualReset = bManualReset;
+		SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
 
-		if (!event->bManualReset)
+	return TRUE;
+}
+
+static int EventGetFd(HANDLE handle)
+{
+	WINPR_EVENT* event = (WINPR_EVENT*)handle;
+
+	if (!EventIsHandled(handle))
+		return -1;
+
+	return event->pipe_fd[0];
+}
+
+static BOOL EventCloseHandle(HANDLE handle)
+{
+	WINPR_EVENT* event = (WINPR_EVENT*) handle;
+
+	if (!EventIsHandled(handle))
+		return FALSE;
+
+	if (!event->bAttached)
+	{
+		if (event->pipe_fd[0] != -1)
 		{
-			WLog_ERR(TAG, "auto-reset events not yet implemented");
+			close(event->pipe_fd[0]);
+			event->pipe_fd[0] = -1;
 		}
 
-		event->pipe_fd[0] = -1;
-		event->pipe_fd[1] = -1;
+		if (event->pipe_fd[1] != -1)
+		{
+			close(event->pipe_fd[1]);
+			event->pipe_fd[1] = -1;
+		}
+	}
+
+	free(event);
+	return TRUE;
+}
+
+static HANDLE_OPS ops =
+{
+	EventIsHandled,
+	EventCloseHandle,
+	EventGetFd,
+	NULL /* CleanupHandle */
+};
+
+HANDLE CreateEventW(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState,
+                    LPCWSTR lpName)
+{
+	WINPR_EVENT* event = (WINPR_EVENT*) calloc(1, sizeof(WINPR_EVENT));
+
+	if (!event)
+		return NULL;
+
+	event->bAttached = FALSE;
+	event->bManualReset = bManualReset;
+	event->ops = &ops;
+	WINPR_HANDLE_SET_TYPE_AND_MODE(event, HANDLE_TYPE_EVENT, FD_READ);
+
+	if (!event->bManualReset)
+		WLog_ERR(TAG, "auto-reset events not yet implemented");
+
+	event->pipe_fd[0] = -1;
+	event->pipe_fd[1] = -1;
 #ifdef HAVE_EVENTFD_H
-		event->pipe_fd[0] = eventfd(0, EFD_NONBLOCK);
+	event->pipe_fd[0] = eventfd(0, EFD_NONBLOCK);
 
-		if (event->pipe_fd[0] < 0)
-		{
-			WLog_ERR(TAG, "failed to create event");
-			free(event);
-			return NULL;
-		}
+	if (event->pipe_fd[0] < 0)
+		goto fail;
 
 #else
 
-		if (pipe(event->pipe_fd) < 0)
-		{
-			WLog_ERR(TAG, "failed to create event");
-			free(event);
-			return NULL;
-		}
+	if (pipe(event->pipe_fd) < 0)
+		goto fail;
 
 #endif
-		WINPR_HANDLE_SET_TYPE(event, HANDLE_TYPE_EVENT);
 
-		if (bInitialState)
-			SetEvent(event);
-	}
-
-	if (!cs.LockSemaphore)
-		InitializeCriticalSection(&cs);
+	if (bInitialState)
+		SetEvent(event);
 
 	return (HANDLE)event;
+fail:
+	free(event);
+	return NULL;
 }
 
-HANDLE CreateEventA(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState, LPCSTR lpName)
+HANDLE CreateEventA(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState,
+                    LPCSTR lpName)
 {
 	return CreateEventW(lpEventAttributes, bManualReset, bInitialState, NULL);
 }
 
-HANDLE CreateEventExW(LPSECURITY_ATTRIBUTES lpEventAttributes, LPCWSTR lpName, DWORD dwFlags, DWORD dwDesiredAccess)
+HANDLE CreateEventExW(LPSECURITY_ATTRIBUTES lpEventAttributes, LPCWSTR lpName, DWORD dwFlags,
+                      DWORD dwDesiredAccess)
 {
 	return NULL;
 }
 
-HANDLE CreateEventExA(LPSECURITY_ATTRIBUTES lpEventAttributes, LPCSTR lpName, DWORD dwFlags, DWORD dwDesiredAccess)
+HANDLE CreateEventExA(LPSECURITY_ATTRIBUTES lpEventAttributes, LPCSTR lpName, DWORD dwFlags,
+                      DWORD dwDesiredAccess)
 {
 	return NULL;
 }
@@ -123,7 +177,7 @@ HANDLE OpenEventA(DWORD dwDesiredAccess, BOOL bInheritHandle, LPCSTR lpName)
 }
 
 #ifdef HAVE_EVENTFD_H
-#if defined(__UCLIBC__)
+#if !defined(WITH_EVENTFD_READ_WRITE)
 static int eventfd_read(int fd, eventfd_t* value)
 {
 	return (read(fd, value, sizeof(*value)) == sizeof(*value)) ? 0 : -1;
@@ -139,7 +193,7 @@ static int eventfd_write(int fd, eventfd_t value)
 BOOL SetEvent(HANDLE hEvent)
 {
 	ULONG Type;
-	PVOID Object;
+	WINPR_HANDLE* Object;
 	int length;
 	BOOL status;
 	WINPR_EVENT* event;
@@ -181,38 +235,31 @@ BOOL SetEvent(HANDLE hEvent)
 BOOL ResetEvent(HANDLE hEvent)
 {
 	ULONG Type;
-	PVOID Object;
+	WINPR_HANDLE* Object;
 	int length;
-	BOOL status;
+	BOOL status = TRUE;
 	WINPR_EVENT* event;
-	status = FALSE;
 
-	if (winpr_Handle_GetInfo(hEvent, &Type, &Object))
+	if (!winpr_Handle_GetInfo(hEvent, &Type, &Object))
+		return FALSE;
+
+	event = (WINPR_EVENT*) Object;
+
+	while (status && WaitForSingleObject(hEvent, 0) == WAIT_OBJECT_0)
 	{
-		event = (WINPR_EVENT*) Object;
-
-		while (WaitForSingleObject(hEvent, 0) == WAIT_OBJECT_0)
+		do
 		{
 #ifdef HAVE_EVENTFD_H
 			eventfd_t value;
-
-			do
-			{
-				length = eventfd_read(event->pipe_fd[0], &value);
-			}
-			while ((length < 0) && (errno == EINTR));
-
-			if ((length > 0) && (!status))
-				status = TRUE;
-
+			length = eventfd_read(event->pipe_fd[0], &value);
 #else
 			length = read(event->pipe_fd[0], &length, 1);
-
-			if ((length == 1) && (!status))
-				status = TRUE;
-
 #endif
 		}
+		while ((length < 0) && (errno == EINTR));
+
+		if (length < 0)
+			status = FALSE;
 	}
 
 	return status;
@@ -220,12 +267,15 @@ BOOL ResetEvent(HANDLE hEvent)
 
 #endif
 
-HANDLE CreateFileDescriptorEventW(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState, int FileDescriptor)
+
+HANDLE CreateFileDescriptorEventW(LPSECURITY_ATTRIBUTES lpEventAttributes,
+                                  BOOL bManualReset, BOOL bInitialState,
+                                  int FileDescriptor, ULONG mode)
 {
 #ifndef _WIN32
 	WINPR_EVENT* event;
 	HANDLE handle = NULL;
-	event = (WINPR_EVENT*) malloc(sizeof(WINPR_EVENT));
+	event = (WINPR_EVENT*) calloc(1, sizeof(WINPR_EVENT));
 
 	if (event)
 	{
@@ -233,7 +283,8 @@ HANDLE CreateFileDescriptorEventW(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL 
 		event->bManualReset = bManualReset;
 		event->pipe_fd[0] = FileDescriptor;
 		event->pipe_fd[1] = -1;
-		WINPR_HANDLE_SET_TYPE(event, HANDLE_TYPE_EVENT);
+		event->ops = &ops;
+		WINPR_HANDLE_SET_TYPE_AND_MODE(event, HANDLE_TYPE_EVENT, mode);
 		handle = (HANDLE) event;
 	}
 
@@ -243,22 +294,27 @@ HANDLE CreateFileDescriptorEventW(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL 
 #endif
 }
 
-HANDLE CreateFileDescriptorEventA(LPSECURITY_ATTRIBUTES lpEventAttributes, BOOL bManualReset, BOOL bInitialState, int FileDescriptor)
+HANDLE CreateFileDescriptorEventA(LPSECURITY_ATTRIBUTES lpEventAttributes,
+                                  BOOL bManualReset, BOOL bInitialState,
+                                  int FileDescriptor, ULONG mode)
 {
-	return CreateFileDescriptorEventW(lpEventAttributes, bManualReset, bInitialState, FileDescriptor);
+	return CreateFileDescriptorEventW(lpEventAttributes, bManualReset,
+	                                  bInitialState, FileDescriptor, mode);
 }
 
 /**
  * Returns an event based on the handle returned by GetEventWaitObject()
  */
 HANDLE CreateWaitObjectEvent(LPSECURITY_ATTRIBUTES lpEventAttributes,
-							 BOOL bManualReset, BOOL bInitialState, void* pObject)
+                             BOOL bManualReset, BOOL bInitialState, void* pObject)
 {
 #ifndef _WIN32
-	return CreateFileDescriptorEventW(lpEventAttributes, bManualReset, bInitialState, (int)(ULONG_PTR) pObject);
+	return CreateFileDescriptorEventW(lpEventAttributes, bManualReset,
+	                                  bInitialState, (int)(ULONG_PTR) pObject, WINPR_FD_READ);
 #else
 	HANDLE hEvent = NULL;
-	DuplicateHandle(GetCurrentProcess(), pObject, GetCurrentProcess(), &hEvent, 0, FALSE, DUPLICATE_SAME_ACCESS);
+	DuplicateHandle(GetCurrentProcess(), pObject, GetCurrentProcess(), &hEvent, 0, FALSE,
+	                DUPLICATE_SAME_ACCESS);
 	return hEvent;
 #endif
 }
@@ -272,7 +328,7 @@ int GetEventFileDescriptor(HANDLE hEvent)
 {
 #ifndef _WIN32
 	ULONG Type;
-	PVOID Object;
+	WINPR_HANDLE* Object;
 	WINPR_EVENT* event;
 
 	if (!winpr_Handle_GetInfo(hEvent, &Type, &Object))
@@ -305,17 +361,23 @@ int GetEventFileDescriptor(HANDLE hEvent)
  * This file descriptor is not usable on Windows
  */
 
-int SetEventFileDescriptor(HANDLE hEvent, int FileDescriptor)
+int SetEventFileDescriptor(HANDLE hEvent, int FileDescriptor, ULONG mode)
 {
 #ifndef _WIN32
 	ULONG Type;
-	PVOID Object;
+	WINPR_HANDLE* Object;
 	WINPR_EVENT* event;
 
 	if (!winpr_Handle_GetInfo(hEvent, &Type, &Object))
 		return -1;
 
 	event = (WINPR_EVENT*) Object;
+
+	if (!event->bAttached && event->pipe_fd[0] >= 0)
+		close(event->pipe_fd[0]);
+
+	event->bAttached = TRUE;
+	event->Mode = mode;
 	event->pipe_fd[0] = FileDescriptor;
 	return 0;
 #else

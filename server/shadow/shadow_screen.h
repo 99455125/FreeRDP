@@ -16,8 +16,8 @@
  * limitations under the License.
  */
 
-#ifndef FREERDP_SHADOW_SERVER_SCREEN_H
-#define FREERDP_SHADOW_SERVER_SCREEN_H
+#ifndef FREERDP_SERVER_SHADOW_SCREEN_H
+#define FREERDP_SERVER_SHADOW_SCREEN_H
 
 #include <freerdp/server/shadow.h>
 
@@ -35,6 +35,7 @@ struct rdp_shadow_screen
 	REGION16 invalidRegion;
 
 	rdpShadowSurface* primary;
+	rdpShadowSurface* lobby;
 };
 
 #ifdef __cplusplus
@@ -48,4 +49,4 @@ void shadow_screen_free(rdpShadowScreen* screen);
 }
 #endif
 
-#endif /* FREERDP_SHADOW_SERVER_SCREEN_H */
+#endif /* FREERDP_SERVER_SHADOW_SCREEN_H */
